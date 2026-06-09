@@ -1,0 +1,14 @@
+# === 密钥配置文件（含 API key，勿提交） ===
+src/main/resources/application.yml
+
+# === IDE ===
+.idea/
+*.iml
+.vscode/
+
+# === Maven ===
+target/
+
+# === OS ===
+.DS_Store
+Thumbs.db

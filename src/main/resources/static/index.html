@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>辅导员 AI 助手 — 枢衡</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect rx='14' width='64' height='64' fill='%23b8860b'/><text x='32' y='44' font-size='36' text-anchor='middle' fill='white'>枢</text></svg>" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- ── 侧栏 ── -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-icon">枢</div>
+        <div>
+          <h1>枢衡</h1>
+          <p class="brand-sub">辅导员 AI 工作助手</p>
+        </div>
+      </div>
+
+      <div class="teacher-info">
+        <label class="field-label">当前身份</label>
+        <input id="teacherId" class="teacher-input" value="teacher-001" placeholder="输入教师编号" />
+      </div>
+
+      <nav class="agent-nav">
+        <h2 class="nav-title">九大职责 Agent</h2>
+        <div id="agentList" class="agent-list"></div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-row">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">就绪</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ── 主区域 ── -->
+    <main class="main">
+      <header class="topbar">
+        <button class="menu-btn" id="menuBtn" aria-label="菜单">☰</button>
+        <h2>对话</h2>
+        <button class="clear-btn" id="clearBtn">新对话</button>
+      </header>
+
+      <!-- 空态欢迎 -->
+      <div class="welcome" id="welcome">
+        <div class="welcome-icon">🦉</div>
+        <h2>今天需要处理什么工作？</h2>
+        <p>枢衡会分析你的需求，调度最合适的 Agent 来处理</p>
+        <div class="quick-actions" id="quickActions">
+          <button data-msg="帮我设计一个二十大精神主题班会方案">🎯 主题班会方案</button>
+          <button data-msg="班级有学生连续3次高数不及格，帮我分析一下怎么帮辅">📚 学业帮辅分析</button>
+          <button data-msg="帮我写一份就业指导讲座的通知文案">📢 通知文案撰写</button>
+          <button data-msg="最近学生群里有舆情苗头，帮我研判一下">🔍 舆情研判</button>
+        </div>
+      </div>
+
+      <!-- 对话流 -->
+      <div class="chat" id="chat" style="display:none">
+        <div id="messages" class="messages"></div>
+      </div>
+
+      <!-- 输入区 -->
+      <div class="composer">
+        <textarea id="userInput" rows="1" placeholder="输入你的工作需求…" autofocus></textarea>
+        <button id="stopBtn" class="stop-btn" style="display:none" aria-label="停止生成">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+        </button>
+        <button id="sendBtn" class="send-btn" aria-label="发送">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>
+        </button>
+      </div>
+    </main>
+  </div>
+
+  <!-- Agent 详情浮层 -->
+  <div class="overlay" id="overlay" style="display:none">
+    <div class="agent-detail-card" id="agentDetail"></div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

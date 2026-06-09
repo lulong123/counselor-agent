@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class TaskService {
@@ -24,8 +25,21 @@ public class TaskService {
     private static final Logger log = LoggerFactory.getLogger(TaskService.class);
 
     private static final String FALLBACK_PROMPT = """
-            你是高校辅导员的AI工作助手。用户输入与九大辅导员职责的匹配度较低，请以通用助手身份简短友好地回复。
-            如果用户输入是闲聊，礼貌回应并引导其提出与辅导员工作相关的需求。
+            你是"枢衡"，高校辅导员AI工作助手的总调度。用户当前需求未匹配到专项助手，请直接以通用辅导员助手身份回复。
+
+            ## 你的身份
+            你是经验丰富的高校辅导员工作助手，熟悉辅导员九大职责，能处理各类学生工作相关事务。
+
+            ## 回复要求
+            1. 如果用户输入是辅导员工作相关问题（即使不在九大专项范围内），请给出专业、具体的建议
+            2. 如果用户输入是闲聊/问候，请友好回应，并主动列举你能帮助的事项（主题班会、谈心谈话、材料撰写、活动方案等）
+            3. 如果用户输入不清晰，请通过提问澄清具体需求
+
+            ## 输出格式
+            - 使用 Markdown 格式，层次分明
+            - 内容具体可操作，不泛泛而谈
+            - 语言专业且亲切，符合辅导员工作语境
+            - 如涉及建议/步骤，用有序列表呈现
             """;
 
     private final TaskRepository taskRepository;
@@ -77,54 +91,107 @@ public class TaskService {
                     task.setStatus(TaskStatus.STREAMING);
                     taskRepository.save(task);
 
-                    // 调用 LLM 流式 → 收集完整内容
-                    List<String> chunks = agent.execute(task.getContent())
-                            .collectList()
-                            .block();
-
-                    String fullResponse = chunks != null ? String.join("", chunks) : "";
-                    task.setResponse(fullResponse);
-                    task.setStatus(TaskStatus.DONE);
-                    taskRepository.save(task);
-
-                    sendEvent(emitter, "content", Map.of("content", fullResponse));
-                    sendEvent(emitter, "stage", Map.of(
-                            "stage", "DONE",
-                            "taskId", task.getId(),
-                            "agent", agent.getId()
-                    ));
+                    // 真流式：逐 chunk 推送 SSE
+                    StringBuilder fullResponse = new StringBuilder();
+                    agent.execute(task.getContent())
+                            .doOnNext(chunk -> {
+                                fullResponse.append(chunk);
+                                try {
+                                    sendEvent(emitter, "content", Map.of("content", chunk));
+                                } catch (IOException e) {
+                                    throw new RuntimeException("SSE send failed", e);
+                                }
+                            })
+                            .doOnComplete(() -> {
+                                task.setResponse(fullResponse.toString());
+                                task.setStatus(TaskStatus.DONE);
+                                taskRepository.save(task);
+                                try {
+                                    sendEvent(emitter, "stage", Map.of(
+                                            "stage", "DONE",
+                                            "taskId", task.getId(),
+                                            "agent", agent.getId()
+                                    ));
+                                    emitter.complete();
+                                } catch (IOException e) {
+                                    emitter.completeWithError(e);
+                                }
+                            })
+                            .doOnError(e -> {
+                                log.error("Agent streaming failed: taskId={}", task.getId(), e);
+                                task.setStatus(TaskStatus.ERROR);
+                                task.setResponse("处理失败: " + e.getMessage());
+                                taskRepository.save(task);
+                                try {
+                                    sendEvent(emitter, "stage", Map.of(
+                                            "stage", "ERROR",
+                                            "taskId", task.getId(),
+                                            "message", e.getMessage()
+                                    ));
+                                    emitter.complete();
+                                } catch (IOException ex) {
+                                    emitter.completeWithError(ex);
+                                }
+                            })
+                            .subscribe();
+                    return;
                 } else {
                     throw new IllegalStateException("Agent not found: " + intent.agentId());
                 }
             } else {
-                // 未命中 — 枢衡直接回复（用 ChatClient，不路由子 Agent）
+                // 未命中 — 枢衡直接回复（真流式）
                 log.info("No intent matched, fallback to chief");
-                sendEvent(emitter, "stage", Map.of("stage", "STREAMING", "agent", "chief"));
+                sendEvent(emitter, "stage", Map.of("stage", "STREAMING", "agent", "chief",
+                        "agentName", "枢衡"));
 
                 task.setAgentId("chief");
                 task.setStatus(TaskStatus.STREAMING);
                 taskRepository.save(task);
 
-                List<String> chunks = chatClient.prompt()
+                StringBuilder fullResponse = new StringBuilder();
+                chatClient.prompt()
                         .system(FALLBACK_PROMPT)
                         .user(task.getContent())
                         .stream()
                         .content()
-                        .collectList()
-                        .block();
-
-                String fullResponse = chunks != null ? String.join("", chunks) : "抱歉，我暂时无法处理这个请求。";
-
-                String fullResponse = String.join("", chunks);
-                task.setResponse(fullResponse);
-                task.setStatus(TaskStatus.DONE);
-                taskRepository.save(task);
-
-                sendEvent(emitter, "content", Map.of("content", fullResponse));
-                sendEvent(emitter, "stage", Map.of("stage", "DONE", "taskId", task.getId()));
+                        .doOnNext(chunk -> {
+                            fullResponse.append(chunk);
+                            try {
+                                sendEvent(emitter, "content", Map.of("content", chunk));
+                            } catch (IOException e) {
+                                throw new RuntimeException("SSE send failed", e);
+                            }
+                        })
+                        .doOnComplete(() -> {
+                            task.setResponse(fullResponse.toString());
+                            task.setStatus(TaskStatus.DONE);
+                            taskRepository.save(task);
+                            try {
+                                sendEvent(emitter, "stage", Map.of("stage", "DONE", "taskId", task.getId()));
+                                emitter.complete();
+                            } catch (IOException e) {
+                                emitter.completeWithError(e);
+                            }
+                        })
+                        .doOnError(e -> {
+                            log.error("Chief fallback streaming failed: taskId={}", task.getId(), e);
+                            task.setStatus(TaskStatus.ERROR);
+                            task.setResponse("处理失败: " + e.getMessage());
+                            taskRepository.save(task);
+                            try {
+                                sendEvent(emitter, "stage", Map.of(
+                                        "stage", "ERROR",
+                                        "taskId", task.getId(),
+                                        "message", e.getMessage()
+                                ));
+                                emitter.complete();
+                            } catch (IOException ex) {
+                                emitter.completeWithError(ex);
+                            }
+                        })
+                        .subscribe();
+                return;
             }
-
-            emitter.complete();
 
         } catch (Exception e) {
             log.error("Task processing failed: taskId={}", task.getId(), e);

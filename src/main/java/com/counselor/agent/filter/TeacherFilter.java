@@ -21,6 +21,13 @@ public class TeacherFilter implements Filter {
         HttpServletRequest req = (HttpServletRequest) request;
         HttpServletResponse res = (HttpServletResponse) response;
 
+        // 静态资源不拦截
+        String path = req.getRequestURI();
+        if (!path.startsWith("/api/")) {
+            chain.doFilter(request, response);
+            return;
+        }
+
         String teacherId = req.getHeader(HEADER);
         if (teacherId == null || teacherId.isBlank()) {
             res.setStatus(400);
