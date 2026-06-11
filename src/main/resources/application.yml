@@ -8,36 +8,39 @@ spring:
       base-url: https://api.deepseek.com
       chat:
         options:
-          model: deepseek-v4-pro
+          model: deepseek-v4-flash
           temperature: 0.7
 
-  # --- 本地开发: H2 内存数据库 ---
+  # --- MySQL 数据库 ---
   datasource:
-    url: jdbc:h2:mem:counselor_agent;DB_CLOSE_DELAY=-1;MODE=MySQL
-    username: sa
-    password:
-    driver-class-name: org.h2.Driver
+    url: jdbc:mysql://192.168.130.6:3306/counselor-agent?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf-8
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
 
   jpa:
     hibernate:
-      ddl-auto: create-drop
+      ddl-auto: update
     show-sql: false
     open-in-view: false
-    database-platform: org.hibernate.dialect.H2Dialect
-
-  sql:
-    init:
-      mode: never
-
-  h2:
-    console:
-      enabled: true
-      path: /h2-console
 
 server:
-  port: 8080
+  port: 8081
 
 logging:
   level:
     com.counselor.agent: DEBUG
     org.springframework.ai.openai: DEBUG
+
+# --- Web Search (Zhipu MCP) ---
+counselor:
+  search:
+    enabled: true
+    provider: zhipu
+    zhipu:
+      api-key: 62636c90f6cc45e3aea0b7084a528015.1egpJXNdc1fTPNAj
+    max-results: 5
+    max-extract-urls: 10
+    max-iterations: 3
+    llm-max-concurrency: 2
+    timeout-seconds: 30

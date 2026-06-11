@@ -1,6 +1,7 @@
 package com.counselor.agent.agent.tongxin;
 
 import com.counselor.agent.agent.SubAgent;
+import com.counselor.agent.agent.AgentPromptService;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -11,9 +12,11 @@ import java.util.List;
 public class TongxinAgent implements SubAgent {
 
     private final ChatClient chatClient;
+    private final AgentPromptService promptService;
 
-    public TongxinAgent(ChatClient chatClient) {
+    public TongxinAgent(ChatClient chatClient, AgentPromptService promptService) {
         this.chatClient = chatClient;
+        this.promptService = promptService;
     }
 
     @Override public String getId() { return "tongxin"; }
@@ -22,43 +25,7 @@ public class TongxinAgent implements SubAgent {
 
     @Override
     public String getSystemPrompt() {
-        return """
-                你是"同心"，高校党团班级建设专业助手，服务对象为大学辅导员。
-                你的输出必须合规、公正、透明、可操作，每一条建议都要有政策依据。
-
-                ## 核心能力
-                - 入党积极分子培养与党员发展全流程指导
-                - 入团流程与团支部建设方案
-                - 推优入党标准制定与评选方案
-                - 班委选举制度设计与实施指南
-                - 班级文化建设与凝聚力活动方案
-                - 主题团日/党日活动方案设计
-
-                ## 输出结构要求
-
-                ### 流程类（入党/入团/推优/选举）
-                1. **政策依据**：引用相关文件条款（标明文件名称和关键条款）
-                2. **操作流程**：分步骤说明，每步注明责任人和时间节点
-                3. **标准条件**：列明硬性条件和优先条件，区分必须满足和参考加分
-                4. **材料清单**：完整列出所需表格和证明材料
-                5. **常见问题**：3-5个实际操作中的易错点和注意事项
-                6. **公示模板**：如有需要，附公示文模板
-
-                ### 活动方案类（团日/党建/班级活动）
-                1. **活动主题与目的**
-                2. **前期准备**（物料、场地、人员）
-                3. **活动流程**（时间分配、环节设计、主持话术）
-                4. **预期效果**
-                5. **延伸建议**
-
-                ## 输出铁律
-                1. 使用 Markdown 格式，层次分明
-                2. 所有流程步骤必须具体到可执行的程度
-                3. 涉及学生个人信息处使用"[学生姓名]"占位
-                4. 政策引用要准确，不确定的标注"建议核实最新文件"
-                5. 公正透明——标准要量化，避免主观判断为主的评价维度
-                6. 总字数不少于 1000 字，确保每个部分都有实质内容
-                """;
+        return promptService.getPrompt(getId());
     }
 
     @Override

@@ -11,6 +11,9 @@ public class Task {
     @Column(length = 36)
     private String id;
 
+    @Column(name = "thread_id", length = 36, nullable = false)
+    private String threadId;
+
     @Column(name = "teacher_id", length = 64, nullable = false)
     private String teacherId;
 
@@ -23,15 +26,18 @@ public class Task {
     @Column(name = "agent_id", length = 32)
     private String agentId;
 
+    @Column(name = "run_name", length = 64)
+    private String runName;
+
     @Column(length = 16)
     private String risk;
 
     @Column(columnDefinition = "MEDIUMTEXT")
-    private String response;
+    private String thinking;
 
     @Enumerated(EnumType.STRING)
     @Column(length = 20, nullable = false)
-    private TaskStatus status = TaskStatus.RECEIVED;
+    private RunStatus status = RunStatus.pending;
 
     @Column(name = "created_at")
     private Instant createdAt;
@@ -57,6 +63,9 @@ public class Task {
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
 
+    public String getThreadId() { return threadId; }
+    public void setThreadId(String threadId) { this.threadId = threadId; }
+
     public String getTeacherId() { return teacherId; }
     public void setTeacherId(String teacherId) { this.teacherId = teacherId; }
 
@@ -69,14 +78,17 @@ public class Task {
     public String getAgentId() { return agentId; }
     public void setAgentId(String agentId) { this.agentId = agentId; }
 
+    public String getRunName() { return runName; }
+    public void setRunName(String runName) { this.runName = runName; }
+
     public String getRisk() { return risk; }
     public void setRisk(String risk) { this.risk = risk; }
 
-    public String getResponse() { return response; }
-    public void setResponse(String response) { this.response = response; }
+    public String getThinking() { return thinking; }
+    public void setThinking(String thinking) { this.thinking = thinking; }
 
-    public TaskStatus getStatus() { return status; }
-    public void setStatus(TaskStatus status) { this.status = status; }
+    public RunStatus getStatus() { return status; }
+    public void setStatus(RunStatus status) { this.status = status; }
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }

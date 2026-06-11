@@ -1,7 +1,7 @@
 package com.counselor.agent.controller;
 
 import com.counselor.agent.model.Task;
-import com.counselor.agent.model.TaskStatus;
+import com.counselor.agent.model.RunStatus;
 import com.counselor.agent.repository.TaskRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -82,7 +82,7 @@ class TaskControllerTest {
         task.setId(UUID.randomUUID().toString());
         task.setTeacherId(teacherId);
         task.setContent(content);
-        task.setStatus(TaskStatus.RECEIVED);
+        task.setStatus(RunStatus.pending);
         return task;
     }
 }

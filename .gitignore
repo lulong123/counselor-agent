@@ -9,6 +9,9 @@ src/main/resources/application.yml
 # === Maven ===
 target/
 
+# === Plans ===
+.plans/
+
 # === OS ===
 .DS_Store
 Thumbs.db

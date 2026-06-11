@@ -2,7 +2,7 @@ package com.counselor.agent.controller;
 
 import com.counselor.agent.filter.TeacherFilter;
 import com.counselor.agent.model.Task;
-import com.counselor.agent.model.TaskStatus;
+import com.counselor.agent.model.RunStatus;
 import com.counselor.agent.repository.TaskRepository;
 import com.counselor.agent.service.TaskService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -44,7 +44,7 @@ public class TaskController {
         task.setId(UUID.randomUUID().toString());
         task.setTeacherId(teacherId);
         task.setContent(content.trim());
-        task.setStatus(TaskStatus.RECEIVED);
+        task.setStatus(RunStatus.pending);
         taskRepository.save(task);
 
         log.info("Task created: id={}, teacherId={}, content={}", task.getId(), teacherId, content);

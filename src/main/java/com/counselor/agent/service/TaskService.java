@@ -5,7 +5,7 @@ import com.counselor.agent.agent.SubAgent;
 import com.counselor.agent.agent.chief.ChiefAgent;
 import com.counselor.agent.model.Task;
 import com.counselor.agent.model.TaskIntent;
-import com.counselor.agent.model.TaskStatus;
+import com.counselor.agent.model.RunStatus;
 import com.counselor.agent.repository.TaskRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,7 +67,7 @@ public class TaskService {
         try {
             // Stage 1: 意图分析
             sendEvent(emitter, "stage", Map.of("stage", "ROUTING", "taskId", task.getId()));
-            task.setStatus(TaskStatus.ROUTING);
+            task.setStatus(RunStatus.running);
             taskRepository.save(task);
 
             TaskIntent intent = chiefAgent.analyze(task.getContent());
@@ -88,7 +88,7 @@ public class TaskService {
                             "agentName", agent.getName(),
                             "risk", intent.risk()
                     ));
-                    task.setStatus(TaskStatus.STREAMING);
+                    task.setStatus(RunStatus.running);
                     taskRepository.save(task);
 
                     // 真流式：逐 chunk 推送 SSE
@@ -103,8 +103,7 @@ public class TaskService {
                                 }
                             })
                             .doOnComplete(() -> {
-                                task.setResponse(fullResponse.toString());
-                                task.setStatus(TaskStatus.DONE);
+                                task.setStatus(RunStatus.success);
                                 taskRepository.save(task);
                                 try {
                                     sendEvent(emitter, "stage", Map.of(
@@ -119,8 +118,7 @@ public class TaskService {
                             })
                             .doOnError(e -> {
                                 log.error("Agent streaming failed: taskId={}", task.getId(), e);
-                                task.setStatus(TaskStatus.ERROR);
-                                task.setResponse("处理失败: " + e.getMessage());
+                                task.setStatus(RunStatus.error);
                                 taskRepository.save(task);
                                 try {
                                     sendEvent(emitter, "stage", Map.of(
@@ -145,7 +143,7 @@ public class TaskService {
                         "agentName", "枢衡"));
 
                 task.setAgentId("chief");
-                task.setStatus(TaskStatus.STREAMING);
+                task.setStatus(RunStatus.running);
                 taskRepository.save(task);
 
                 StringBuilder fullResponse = new StringBuilder();
@@ -163,8 +161,7 @@ public class TaskService {
                             }
                         })
                         .doOnComplete(() -> {
-                            task.setResponse(fullResponse.toString());
-                            task.setStatus(TaskStatus.DONE);
+                            task.setStatus(RunStatus.success);
                             taskRepository.save(task);
                             try {
                                 sendEvent(emitter, "stage", Map.of("stage", "DONE", "taskId", task.getId()));
@@ -175,8 +172,7 @@ public class TaskService {
                         })
                         .doOnError(e -> {
                             log.error("Chief fallback streaming failed: taskId={}", task.getId(), e);
-                            task.setStatus(TaskStatus.ERROR);
-                            task.setResponse("处理失败: " + e.getMessage());
+                            task.setStatus(RunStatus.error);
                             taskRepository.save(task);
                             try {
                                 sendEvent(emitter, "stage", Map.of(
@@ -195,8 +191,7 @@ public class TaskService {
 
         } catch (Exception e) {
             log.error("Task processing failed: taskId={}", task.getId(), e);
-            task.setStatus(TaskStatus.ERROR);
-            task.setResponse("处理失败: " + e.getMessage());
+            task.setStatus(RunStatus.error);
             taskRepository.save(task);
             try {
                 sendEvent(emitter, "stage", Map.of(

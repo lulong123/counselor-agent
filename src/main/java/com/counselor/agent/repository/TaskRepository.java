@@ -7,4 +7,8 @@ import java.util.List;
 public interface TaskRepository extends JpaRepository<Task, String> {
 
     List<Task> findByTeacherIdOrderByCreatedAtDesc(String teacherId);
+
+    List<Task> findByThreadIdOrderByCreatedAtDesc(String threadId);
+
+    void deleteByThreadId(String threadId);
 }

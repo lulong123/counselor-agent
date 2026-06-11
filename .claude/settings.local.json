@@ -6,7 +6,9 @@
       "mcp__web-search-prime__web_search_prime",
       "Bash(command -v codex)",
       "Bash(git commit *)",
-      "Bash(java -version)"
+      "Bash(java -version)",
+      "Bash(rm -rf /Users/luwenlong/Documents/后端项目/counselor-agent/src/main/resources/static/assets/*)",
+      "Bash(cp -r /Users/luwenlong/Documents/后端项目/counselor-agent/frontend/dist/* /Users/luwenlong/Documents/后端项目/counselor-agent/src/main/resources/static/)"
     ]
   }
 }

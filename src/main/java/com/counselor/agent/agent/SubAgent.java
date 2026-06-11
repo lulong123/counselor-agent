@@ -1,5 +1,6 @@
 package com.counselor.agent.agent;
 
+import org.springframework.ai.model.function.FunctionCallback;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
@@ -17,8 +18,8 @@ public interface SubAgent {
     /** 路由关键词列表，供 ChiefAgent 作为 LLM 分类的参考依据 */
     List<String> getKeywords();
 
-    /** 扩展口子：工具列表，当前返回空，后续加 WebSearch 等无需改接口 */
-    default List<Object> getTools() {
+    /** 工具列表，返回此 Agent 可用的 FunctionCallback（如 web_search, web_fetch） */
+    default List<FunctionCallback> getTools() {
         return List.of();
     }
 

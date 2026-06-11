@@ -1,8 +1,12 @@
 package com.counselor.agent.agent.chief;
 
+import com.counselor.agent.agent.AgentPromptService;
 import com.counselor.agent.agent.AgentRouter;
 import com.counselor.agent.agent.SubAgent;
 import com.counselor.agent.model.TaskIntent;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import java.io.IOException;
+import java.util.Map;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -21,17 +25,26 @@ public class ChiefAgent {
     private final String classificationPrompt;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public ChiefAgent(ChatClient chatClient, AgentRouter router) {
+    public ChiefAgent(ChatClient chatClient, AgentRouter router, AgentPromptService promptService) {
         this.chatClient = chatClient;
-        this.classificationPrompt = buildClassificationPrompt(router);
+        this.classificationPrompt = buildClassificationPrompt(router, promptService);
     }
 
-    private String buildClassificationPrompt(AgentRouter router) {
+    private String buildClassificationPrompt(AgentRouter router, AgentPromptService promptService) {
         String agentList = router.allAgents().stream()
                 .map(a -> String.format("- agentId: \"%s\", 名称: \"%s\", 职责: \"%s\", 关键词: %s",
                         a.getId(), a.getName(), a.getDuty(), String.join(", ", a.getKeywords())))
                 .collect(Collectors.joining("\n"));
 
+        String template = promptService.getChiefPrompt();
+        if (template.isBlank()) {
+            log.warn("Chief prompt not found, using fallback");
+            return buildFallbackPrompt(agentList);
+        }
+        return template.replace("{agent_list}", agentList);
+    }
+
+    private String buildFallbackPrompt(String agentList) {
         return """
                 你是辅导员工作台的主控调度助手"枢衡"。分析用户输入，判断属于以下哪类辅导员职责，返回对应的 agentId。
 
@@ -105,4 +118,52 @@ public class ChiefAgent {
         }
         return trimmed;
     }
+
+    public TaskIntent analyzeWithStream(String userInput, SseEmitter emitter) {
+        StringBuilder buf = new StringBuilder();
+        try {
+            chatClient.prompt()
+                    .system(classificationPrompt)
+                    .user(userInput)
+                    .stream()
+                    .content()
+                    .doOnNext(chunk -> {
+                        buf.append(chunk);
+                        try {
+                            emitter.send(SseEmitter.event()
+                                .name("thinking")
+                                .data(Map.of("content", chunk)));
+                        } catch (IOException e) {
+                            // client disconnected
+                        }
+                    })
+                    .blockLast();
+
+            String response = buf.toString();
+            log.debug("ChiefAgent streaming response: {}", response);
+
+            if (response.isBlank()) {
+                return new TaskIntent(null, 0, TaskIntent.RISK_LOW, "LLM 返回空");
+            }
+
+            String json = extractJson(response);
+            TaskIntent intent = objectMapper.readValue(json, TaskIntent.class);
+            log.info("Intent: agentId={}, confidence={}, risk={}", intent.agentId(), intent.confidence(), intent.risk());
+            return intent;
+
+        } catch (Exception e) {
+            log.error("ChiefAgent streaming analysis failed", e);
+            // Fallback: try to parse what we got so far
+            if (buf.length() > 0) {
+                try {
+                    String json = extractJson(buf.toString());
+                    return objectMapper.readValue(json, TaskIntent.class);
+                } catch (Exception ex) {
+                    // ignore
+                }
+            }
+            return new TaskIntent(null, 0, TaskIntent.RISK_LOW, "流式分析异常: " + e.getMessage());
+        }
+    }
+
 }
