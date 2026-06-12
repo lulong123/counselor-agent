@@ -35,6 +35,7 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.InetAddress;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.nio.charset.StandardCharsets;
@@ -89,12 +90,14 @@ public class RunService {
     private boolean searchEnabled;
 
     private final RestClient.Builder restClientBuilder;
+    private final HttpClient sharedHttpClient;
 
     public RunService(TaskRepository taskRepository, ThreadRepository threadRepository,
                       MessageRepository messageRepository, ChiefAgent chiefAgent,
                       AgentRouter router, ChatClient chatClient,
                       WebSearchTool webSearchTool, WebFetchTool webFetchTool,
-                      ObjectMapper objectMapper, RestClient.Builder restClientBuilder) {
+                      ObjectMapper objectMapper, RestClient.Builder restClientBuilder,
+                      HttpClient sharedHttpClient) {
         this.taskRepository = taskRepository;
         this.threadRepository = threadRepository;
         this.messageRepository = messageRepository;
@@ -105,6 +108,7 @@ public class RunService {
         this.webFetchTool = webFetchTool;
         this.objectMapper = objectMapper;
         this.restClientBuilder = restClientBuilder;
+        this.sharedHttpClient = sharedHttpClient;
     }
 
     private static final java.util.concurrent.atomic.AtomicLong runCounter = new java.util.concurrent.atomic.AtomicLong(0);
@@ -444,27 +448,32 @@ public class RunService {
             String requestJson = objectMapper.writeValueAsString(body);
             log.info("[SSE-{}] Raw SSE call — model={}, bodyLen={}", runId, model, requestJson.length());
 
-            // Use JDK HttpClient (not HttpURLConnection) — works reliably on Alpine
-            // 30s connect timeout to handle CDN IP variations and slow routes
-            JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
-                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build());
+            // DNS pre-check: resolve api.deepseek.com to see if DNS is the issue
+            try {
+                long dnsStart = System.currentTimeMillis();
+                InetAddress[] addrs = InetAddress.getAllByName("api.deepseek.com");
+                StringBuilder ipList = new StringBuilder();
+                for (InetAddress a : addrs) ipList.append(a.getHostAddress()).append(",");
+                log.info("[SSE-{}] DNS resolved api.deepseek.com → [{}] in {}ms",
+                    runId, ipList, System.currentTimeMillis() - dnsStart);
+            } catch (Exception dnsErr) {
+                log.error("[SSE-{}] DNS FAILED for api.deepseek.com: {}", runId, dnsErr.getMessage());
+            }
+
+            // Use shared HttpClient — connection pool keeps TCP warm between requests
+            JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(sharedHttpClient);
             factory.setReadTimeout(Duration.ofSeconds(600));
             RestClient rawClient = restClientBuilder.requestFactory(factory).build();
 
-            // Exponential backoff retries: up to 4 attempts (2s, 4s, 8s delays)
+            // Aggressive retries: 6 attempts with short delays (1s, 2s, 3s, 4s, 5s)
+            // Shared HttpClient pool means retry may reuse a still-warm connection
             Exception lastEx = null;
-            int maxAttempts = 4;
+            int maxAttempts = 6;
             for (int attempt = 0; attempt < maxAttempts; attempt++) {
-                // On retry, force DNS re-resolution by re-creating HttpClient
                 if (attempt > 0) {
-                    int delaySec = (int) Math.pow(2, attempt); // 2s, 4s, 8s
+                    int delaySec = attempt; // 1s, 2s, 3s, 4s, 5s
                     log.info("DeepSeek retry attempt {}/{} after {}s...", attempt + 1, maxAttempts, delaySec);
                     try { Thread.sleep(delaySec * 1000L); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
-                    // Re-create factory to get fresh DNS resolution
-                    factory = new JdkClientHttpRequestFactory(
-                        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build());
-                    factory.setReadTimeout(Duration.ofSeconds(600));
-                    rawClient = restClientBuilder.requestFactory(factory).build();
                 }
                 try {
                     rawClient.post()
