@@ -1,0 +1,42 @@
+server:
+  port: 8081
+
+spring:
+  ai:
+    openai:
+      api-key: ${DEEPSEEK_API_KEY}
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    root: info
+    com.counselor: info
+  file:
+    name: /app/logs/application.log
+  logback:
+    rollingpolicy:
+      max-file-size: 50MB
+      max-history: 30
+
+counselor:
+  search:
+    zhipu:
+      api-key: ${ZHIPU_API_KEY}

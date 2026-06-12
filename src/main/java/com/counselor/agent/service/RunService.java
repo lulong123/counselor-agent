@@ -73,6 +73,12 @@ public class RunService {
     @Value("${spring.ai.openai.api-key}")
     private String deepseekApiKey;
 
+    @Value("${spring.ai.openai.chat.options.temperature:0.3}")
+    private double temperature;
+
+    @Value("${counselor.search.enabled:false}")
+    private boolean searchEnabled;
+
     public RunService(TaskRepository taskRepository, ThreadRepository threadRepository,
                       MessageRepository messageRepository, ChiefAgent chiefAgent,
                       AgentRouter router, ChatClient chatClient,
@@ -129,8 +135,10 @@ public class RunService {
 
             String systemPrompt;
             List<FunctionCallback> tools = new ArrayList<>();
-            tools.add(webSearchTool);
-            tools.add(webFetchTool);
+            if (searchEnabled) {
+                tools.add(webSearchTool);
+                tools.add(webFetchTool);
+            }
 
             if (intent.isRouted()) {
                 Optional<SubAgent> agentOpt = router.dispatch(intent.agentId());
@@ -178,16 +186,22 @@ public class RunService {
                               List<FunctionCallback> tools, Task run,
                               String threadId, String teacherId, boolean deepThinking, SseEmitter emitter) {
         StringBuilder fullResponse = new StringBuilder();
+        StringBuilder fullReasoning = new StringBuilder();
         List<org.springframework.ai.chat.messages.Message> messages = new ArrayList<>();
         messages.add(new UserMessage(userInput));
         boolean toolsUsed = false;
         String lastResponseText = null;
 
-        String toolHint = "\n\n当前日期: " + java.time.LocalDate.now().toString() + "\n\n"
-                + "你有以下工具可用：\n"
-                + "- web_search(query, max_results, recency): 搜索网络获取实时信息。recency可选值: oneDay(24h内)/oneWeek(7天内)/oneMonth(30天内)/noLimit(不限)。价格、新闻、天气等时效性内容务必用oneDay。\n"
-                + "- web_fetch(url): 抓取指定网页的完整内容\n"
-                + "搜索时效性内容时务必在query中加上日期，并用recency=oneDay过滤，确保结果是最新的。";
+        String toolHint = "\n\n当前日期: " + java.time.LocalDate.now().toString() + "\n\n";
+        if (searchEnabled) {
+            toolHint += """
+
+                    ⚠️ 工具使用原则（必须遵守）：
+                    - 你的知识足以回答绝大多数辅导员工作问题（班会方案、谈心话术、通知起草、学业分析等），**优先直接回答，不要搜索**
+                    - **仅以下情况可搜索**：用户明确要求查询最新政策法规、实时新闻事件、近期数据
+                    - 即使使用搜索，也**最多1次**
+                    - 不需要搜索的问题绝不搜索""";
+        }
 
         String modelName = deepThinking ? "deepseek-v4-pro" : "deepseek-v4-flash";
         log.info("Using model: {} (deepThinking={})", modelName, deepThinking);
@@ -210,7 +224,7 @@ public class RunService {
                 // Spring AI's .stream() uses WebClient (no interceptor), and worse,
                 // doesn't set stream=true in the request. We bypass it entirely.
                 AssistantMessage aiMsg = rawStreamingCall(
-                    prompt, tools, modelName, deepThinking, emitter);
+                    prompt, tools, modelName, deepThinking, emitter, fullReasoning);
 
                 if (aiMsg.hasToolCalls()) {
                     toolsUsed = true;
@@ -250,7 +264,7 @@ public class RunService {
 
                 try {
                     AssistantMessage finalMsg = rawStreamingCall(
-                        streamPrompt, List.of(), modelName, deepThinking, emitter);
+                        streamPrompt, List.of(), modelName, deepThinking, emitter, fullReasoning);
                     if (finalMsg.getText() != null) {
                         fullResponse.append(finalMsg.getText());
                     }
@@ -285,7 +299,7 @@ public class RunService {
 
         finishRun(run, threadId, teacherId,
             run.getAgentId() != null ? run.getAgentId() : "chief",
-            run.getRisk(), fullResponse.toString(), emitter);
+            run.getRisk(), fullResponse.toString(), emitter, fullReasoning.toString());
     }
 
     /**
@@ -297,7 +311,7 @@ public class RunService {
     private AssistantMessage rawStreamingCall(
             List<org.springframework.ai.chat.messages.Message> prompt,
             List<FunctionCallback> tools, String model, boolean deepThinking,
-            SseEmitter emitter) {
+            SseEmitter emitter, StringBuilder reasoningSink) {
         StringBuilder fullText = new StringBuilder();
         LinkedHashMap<Integer, ToolCallAccumulator> tcAccum = new LinkedHashMap<>();
 
@@ -352,7 +366,7 @@ public class RunService {
             body.put("messages", msgs);
             if (!toolDefs.isEmpty()) body.put("tools", toolDefs);
             body.put("stream", true);
-            body.put("temperature", 0.7);
+            body.put("temperature", temperature);
             body.put("reasoning_effort", deepThinking ? "medium" : "low");
 
             String requestJson = objectMapper.writeValueAsString(body);
@@ -385,6 +399,7 @@ public class RunService {
                                 // Reasoning → forward to frontend in real time
                                 var rc = delta.path("reasoning_content");
                                 if (!rc.isMissingNode() && !rc.isNull() && !rc.asText().isEmpty()) {
+                                    reasoningSink.append(rc.asText());
                                     safeSend(emitter, "agent_thinking",
                                         Map.of("content", rc.asText()));
                                 }
@@ -484,8 +499,14 @@ public class RunService {
     // ── Finish / Fail ──
 
     private void finishRun(Task run, String threadId, String teacherId,
-                           String agentId, String risk, String fullResponse, SseEmitter emitter) {
+                           String agentId, String risk, String fullResponse, SseEmitter emitter,
+                           String reasoningContent) {
         run.setStatus(RunStatus.success);
+
+        // Only save the full CoT reasoning, skip short classification text
+        if (!reasoningContent.isBlank()) {
+            run.setThinking(reasoningContent);
+        }
         taskRepository.save(run);
 
         int seq = messageRepository.findMaxSeqByThreadId(threadId) + 1;

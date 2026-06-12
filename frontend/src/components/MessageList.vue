@@ -15,7 +15,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'select-detail': [item: { title: string; url: string; content: string }]
+  'show-search-results': [results: Array<{ title: string; url: string; content: string }>]
 }>()
 
 // Find the last assistant message index — this is the one to wrap in AssistantTurn
@@ -48,14 +48,14 @@ const hasActiveTurn = computed(() => {
       <!-- Last assistant message: wrap in AssistantTurn -->
       <AssistantTurn
         v-else-if="m.role === 'assistant' && idx === lastAssistantIndex"
-        :thinking-text="thinkingText ?? ''"
+        :thinking-text="thinkingText || m.thinking || ''"
         :agent-thinking-text="agentThinkingText ?? ''"
         :tool-calls="toolCalls ?? []"
         :turn-steps="turnSteps ?? []"
         :assistant-message="m"
         :is-streaming="isStreaming ?? false"
         :teacher-label="teacherLabel"
-        @select-detail="(item) => emit('select-detail', item)"
+        @show-search-results="(results) => emit('show-search-results', results)"
       />
 
       <!-- Historical assistant message with thinking -->
@@ -67,7 +67,7 @@ const hasActiveTurn = computed(() => {
         :assistant-message="m"
         :is-streaming="false"
         :teacher-label="teacherLabel"
-        @select-detail="(item) => emit('select-detail', item)"
+        @show-search-results="(results) => emit('show-search-results', results)"
       />
 
       <!-- Historical assistant messages without thinking -->
@@ -88,15 +88,15 @@ const hasActiveTurn = computed(() => {
       :assistant-message="{ id: '', role: 'assistant', content: '' }"
       :is-streaming="isStreaming ?? false"
       :teacher-label="teacherLabel"
-      @select-detail="(item) => emit('select-detail', item)"
+      @show-search-results="(results) => emit('show-search-results', results)"
     />
   </div>
 </template>
 
 <style scoped>
 .msg-list {
-  max-width: 800px; margin: 0 auto;
-  display: flex; flex-direction: column; gap: 14px;
+  max-width: 910px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 8px;
 }
 .empty-hint {
   display: flex; justify-content: center; padding: 40px 0;

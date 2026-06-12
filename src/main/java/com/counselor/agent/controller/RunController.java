@@ -5,7 +5,6 @@ import com.counselor.agent.model.Message;
 import com.counselor.agent.model.Task;
 import com.counselor.agent.repository.TaskRepository;
 import com.counselor.agent.service.RunService;
-import com.counselor.agent.service.SuggestionService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,13 +23,10 @@ public class RunController {
 
     private final RunService runService;
     private final TaskRepository taskRepository;
-    private final SuggestionService suggestionService;
 
-    public RunController(RunService runService, TaskRepository taskRepository,
-                         SuggestionService suggestionService) {
+    public RunController(RunService runService, TaskRepository taskRepository) {
         this.runService = runService;
         this.taskRepository = taskRepository;
-        this.suggestionService = suggestionService;
     }
 
     @PostMapping(value = "/runs/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -75,10 +71,5 @@ public class RunController {
                                       @RequestParam(defaultValue = "0") int beforeSeq,
                                       @RequestParam(defaultValue = "50") int limit) {
         return runService.getMessages(threadId, beforeSeq, limit);
-    }
-
-    @GetMapping("/suggestions")
-    public List<String> getSuggestions(@PathVariable String threadId) {
-        return suggestionService.generate(threadId);
     }
 }

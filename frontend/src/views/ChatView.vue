@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, nextTick, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AGENT_MAP, type Thread, type Message } from '@/types/api'
 import { useChatStream, type ChatMessage } from '@/composables/useChatStream'
@@ -7,8 +7,9 @@ import ChatSidebar from '@/components/ChatSidebar.vue'
 import ChatHeader from '@/components/ChatHeader.vue'
 import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
-import FollowupSuggestions from '@/components/FollowupSuggestions.vue'
+
 import DetailPanel from '@/components/DetailPanel.vue'
+import AgentGrid from '@/components/AgentGrid.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,19 +18,20 @@ const teacherId = ref(localStorage.getItem('teacherId') || 'anonymous')
 const messages = ref<ChatMessage[]>([])
 const threads = ref<Thread[]>([])
 const threadTitle = ref('')
-const deepThinking = ref(false)
+const agentPrompt = ref('')
 
-/* ── Detail panel ── */
-const detailVisible = ref(false)
-const detailItem = ref<{ title: string; url: string; content: string } | null>(null)
 
-function handleSelectDetail(item: { title: string; url: string; content: string }) {
-  detailItem.value = item
-  detailVisible.value = true
+/* ── Search results panel ── */
+const searchResultsVisible = ref(false)
+const searchResults = ref<Array<{ title: string; url: string; content: string }>>([])
+
+function handleShowSearchResults(results: Array<{ title: string; url: string; content: string }>) {
+  searchResults.value = results
+  searchResultsVisible.value = true
 }
 
-function handleCloseDetail() {
-  detailVisible.value = false
+function handleCloseSearchResults() {
+  searchResultsVisible.value = false
 }
 
 const chatRef = ref<HTMLElement>()
@@ -38,11 +40,6 @@ const loadingMore = ref(false)
 
 const { isStreaming, activeAgent, currentThreadId, toolCalls, thinkingText, agentThinkingText, turnSteps, createThread, deleteThread, loadThreads, loadMessages, send, stop } =
   useChatStream({ teacherId, messages })
-
-function saveTeacherId(v: string) {
-  teacherId.value = v
-  localStorage.setItem('teacherId', v)
-}
 
 function scrollDown() {
   nextTick(() => {
@@ -66,21 +63,10 @@ async function selectThread(threadId: string) {
   router.push(`/chat/${threadId}`)
 }
 
-async function newThread() {
-  try {
-    const t = await createThread()
-    currentThreadId.value = t.id
-    router.push(`/chat/${t.id}`)
-  } catch {
-    // Retry once
-    try {
-      const t = await createThread()
-      currentThreadId.value = t.id
-      router.push(`/chat/${t.id}`)
-    } catch {
-      return // silent fail — user can try again
-    }
-  }
+function newThread() {
+  currentThreadId.value = null
+  messages.value = []
+  router.push('/')
 }
 
 async function openThread(threadId: string) {
@@ -109,21 +95,23 @@ async function openThread(threadId: string) {
 
 /* ── Send ── */
 
+let justCreatedThreadId: string | null = null
+
 async function handleSend(content: string) {
-  // Thread is always created server-side before first message
+  agentPrompt.value = ''
   if (!currentThreadId.value) {
     try {
       const t = await createThread()
       currentThreadId.value = t.id
+      justCreatedThreadId = t.id
       router.replace(`/chat/${t.id}`)
     } catch {
-      // Retry once
       try {
         const t = await createThread()
         currentThreadId.value = t.id
+        justCreatedThreadId = t.id
         router.replace(`/chat/${t.id}`)
       } catch {
-        // Show error as system message instead of silent random-id fallback
         messages.value.push({
           id: 'error-' + Date.now(),
           role: 'assistant',
@@ -134,7 +122,7 @@ async function handleSend(content: string) {
     }
   }
 
-  await send(currentThreadId.value, content, deepThinking.value, (_agent) => {
+  await send(currentThreadId.value, content, false, (_agent) => {
     scrollDown()
   })
 
@@ -144,10 +132,10 @@ async function handleSend(content: string) {
   scrollDown()
 }
 
-/* ── Quick prompt from sidebar agent ── */
+/* ── Agent grid select ── */
 
-function handleQuickPrompt(text: string) {
-  handleSend(text)
+function handleAgentSelect(text: string) {
+  agentPrompt.value = text
 }
 
 async function handleDeleteThread(threadId: string) {
@@ -179,7 +167,6 @@ async function loadMoreMessages() {
       risk: m.risk, thinking: m.thinking, seq: m.seq,
     }))
     messages.value = [...mapped, ...messages.value]
-    // Keep scroll position stable after prepending
     nextTick(() => {
       if (chatRef.value) {
         chatRef.value.scrollTop = chatRef.value.scrollHeight - prevScrollHeight
@@ -203,18 +190,25 @@ onMounted(async () => {
   const threadId = route.params.threadId as string | undefined
   if (threadId) {
     await openThread(threadId)
-  } else if (route.path === '/') {
-    // welcome — no thread loaded
   }
 })
 
 /* ── Watch for route changes ── */
-import { watch } from 'vue'
 watch(() => route.params.threadId, async (newId) => {
   if (newId && typeof newId === 'string' && newId !== currentThreadId.value) {
+    if (newId === justCreatedThreadId) {
+      justCreatedThreadId = null
+      return
+    }
     await openThread(newId)
   }
 })
+
+/* ── Auto-scroll during streaming ── */
+watch(
+  () => messages.value[messages.value.length - 1]?.content,
+  () => { if (isStreaming.value) scrollDown() }
+)
 </script>
 
 <template>
@@ -222,12 +216,8 @@ watch(() => route.params.threadId, async (newId) => {
     <ChatSidebar
       :threads="threads"
       :active-thread-id="currentThreadId"
-      :active-agent="activeAgent"
-      :teacher-id="teacherId"
-      @update:teacher-id="saveTeacherId"
       @select-thread="selectThread"
       @new-thread="newThread"
-      @quick-prompt="handleQuickPrompt"
       @delete-thread="handleDeleteThread"
     />
 
@@ -240,49 +230,50 @@ watch(() => route.params.threadId, async (newId) => {
       <div class="main-content">
         <div class="chat-column">
           <div class="chat-area" ref="chatRef" @scroll="handleChatScroll">
-            <!-- Welcome -->
             <div v-if="!currentThreadId && messages.length === 0" class="welcome">
-              <div class="welcome-icon">🏛️</div>
-              <h2>你好，辅导员</h2>
-              <p>选择左侧 AI 助理或直接输入问题，我会把任务路由到最合适的 Agent 处理。</p>
-              <div class="quick-row">
-                <el-button
-                  v-for="a in ['帮我写一份学风建设主题班会提纲','学生出现心理危机怎么应对','帮我起草一份评奖评优通知','帮我分析这个学生的就业方向']"
-                  :key="a" size="small" round @click="handleSend(a)"
-                >{{ a }}</el-button>
+              <div class="welcome-top">
+                <h2 class="welcome-heading">你好，辅导员</h2>
+                <p class="welcome-sub">选择 AI 助理或直接输入问题，我会把任务指派给最合适的 Agent 处理</p>
               </div>
+              <AgentGrid @select="handleAgentSelect" />
+              <ChatInput
+                :is-streaming="isStreaming"
+                :prefill="agentPrompt"
+                @send="handleSend"
+                @stop="stop"
+                @update:prefill="agentPrompt = $event"
+              />
+              <p class="ai-disclaimer">内容由AI生成，请仔细甄别</p>
             </div>
 
-            <MessageList
-              :messages="messages"
-              :teacher-label="teacherId"
-              :tool-calls="toolCalls"
-              :thinking-text="thinkingText"
-              :agent-thinking-text="agentThinkingText"
-              :turn-steps="turnSteps"
-              :is-streaming="isStreaming"
-              @select-detail="handleSelectDetail"
-            />
+            <template v-else>
+              <MessageList
+                :messages="messages"
+                :teacher-label="teacherId"
+                :tool-calls="toolCalls"
+                :thinking-text="thinkingText"
+                :agent-thinking-text="agentThinkingText"
+                :turn-steps="turnSteps"
+                :is-streaming="isStreaming"
+                @show-search-results="handleShowSearchResults"
+              />
+            </template>
           </div>
 
-          <FollowupSuggestions
-            :thread-id="currentThreadId"
-            :is-streaming="isStreaming"
-            @select="handleSend"
-          />
-
-          <ChatInput
-            :is-streaming="isStreaming"
-            v-model="deepThinking"
-            @send="handleSend"
-            @stop="stop"
-          />
+          <template v-if="currentThreadId || messages.length > 0">
+            <ChatInput
+              :is-streaming="isStreaming"
+              @send="handleSend"
+              @stop="stop"
+            />
+            <p class="ai-disclaimer">内容由AI生成，请仔细甄别</p>
+          </template>
         </div>
 
         <DetailPanel
-          :visible="detailVisible"
-          :item="detailItem"
-          @close="handleCloseDetail"
+          :visible="searchResultsVisible"
+          :results="searchResults"
+          @close="handleCloseSearchResults"
         />
       </div>
     </main>
@@ -290,16 +281,81 @@ watch(() => route.params.threadId, async (newId) => {
 </template>
 
 <style scoped>
-.app-layout { display: flex; height: 100vh; background: #f5f0e8; font-family: "PingFang SC", system-ui, sans-serif; }
+.app-layout {
+  display: flex;
+  height: 100vh;
+  background: var(--bg-app);
+  font-family: "PingFang SC", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
 
-.main-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.main-content { flex: 1; display: flex; min-height: 0; }
-.chat-column { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.chat-area { flex: 1; overflow-y: auto; padding: 20px 24px; }
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
 
-.welcome { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center; }
-.welcome-icon { font-size: 52px; margin-bottom: 12px; }
-.welcome h2 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
-.welcome p { font-size: 14px; color: #6b5e4a; max-width: 400px; line-height: 1.6; margin-bottom: 20px; }
-.quick-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.main-content {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.chat-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px;
+}
+
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  gap: 32px;
+  padding: 0 48px;
+}
+
+.welcome-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.welcome-heading {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin: 0;
+  letter-spacing: -0.3px;
+}
+
+.welcome-sub {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.welcome :deep(.composer) {
+  width: 100%;
+}
+
+.ai-disclaimer {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin: 0;
+  padding: 4px 0 8px;
+}
 </style>

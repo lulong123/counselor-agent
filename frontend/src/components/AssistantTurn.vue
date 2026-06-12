@@ -16,6 +16,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'select-detail': [item: { title: string; url: string; content: string }]
+  'show-search-results': [results: Array<{ title: string; url: string; content: string }>]
 }>()
 
 /* ── Unified thinking collapse (一级折叠) ── */
@@ -46,14 +47,13 @@ function stepIcon(name: string): string {
 
 function toolLabel(tc: ToolCallInfo): string {
   if (tc.name === 'web_search') {
-    const q = tc.args?.query || ''
-    if (tc.status === 'calling') return `正在搜索：${q || '...'}`
+    if (tc.status === 'calling') return '正在搜索…'
     if (tc.status === 'done' && tc.result) {
       try {
         const parsed = JSON.parse(tc.result)
         const count = parsed.results?.length || 0
-        return `搜索"${q}"，找到 ${count} 个网页`
-      } catch { return `搜索"${q}"完成` }
+        return `搜索完成，找到 ${count} 个网页`
+      } catch { return '搜索完成' }
     }
     return '搜索中…'
   }
@@ -70,6 +70,16 @@ function toolLabel(tc: ToolCallInfo): string {
 
 function handleSelectDetail(item: { title: string; url: string; content: string }) {
   emit('select-detail', item)
+}
+
+function handleToolClick(tc: ToolCallInfo) {
+  if (tc.name === 'web_search' && tc.status === 'done' && tc.result) {
+    try {
+      const parsed = JSON.parse(tc.result)
+      const results = parsed.results || []
+      emit('show-search-results', results)
+    } catch { /* ignore */ }
+  }
 }
 
 /* ── Legacy thinking (fallback for history) ── */
@@ -137,29 +147,24 @@ const hasLegacySteps = computed(() => hasLegacyThinking.value || hasLegacyToolCa
             <div v-if="step.type === 'thinking'" class="think-block">
               {{ step.thinking }}
             </div>
-            <!-- Tool call step (inside collapse!) -->
-            <div v-else-if="step.type === 'tool_call' && step.toolCall" class="tool-step">
+            <!-- Search result — click opens right panel -->
+            <div v-else-if="step.type === 'tool_call' && step.toolCall && step.toolCall.name === 'web_search'" class="tool-step">
               <div
-                class="tool-step-header"
-                :class="{ clickable: step.toolCall.status === 'done' }"
-                @click="step.toolCall.status === 'done' && toggleTool(step.toolCall.id)"
+                class="tool-step-header clickable"
+                @click="handleToolClick(step.toolCall!)"
               >
                 <span class="tool-step-icon">{{ stepIcon(step.toolCall.name) }}</span>
                 <span class="tool-step-label">{{ toolLabel(step.toolCall) }}</span>
-                <span v-if="step.toolCall.status === 'done'" class="tool-step-toggle">
-                  {{ expandedTools[step.toolCall.id] ? '收起 ▲' : '展开 ▶' }}
-                </span>
+                <span v-if="step.toolCall.status === 'done'" class="tool-step-toggle">查看 →</span>
                 <span v-else-if="step.toolCall.status === 'calling'" class="tool-step-spinner" />
               </div>
-              <div
-                v-if="step.toolCall.status === 'done' && expandedTools[step.toolCall.id]"
-                class="tool-step-body"
-              >
-                <ToolCallBubble
-                  :tool-call="step.toolCall"
-                  :in-turn="true"
-                  @select-detail="handleSelectDetail"
-                />
+            </div>
+            <!-- Other tool calls — label only, no expand -->
+            <div v-else-if="step.type === 'tool_call' && step.toolCall" class="tool-step">
+              <div class="tool-step-header">
+                <span class="tool-step-icon">{{ stepIcon(step.toolCall.name) }}</span>
+                <span class="tool-step-label">{{ toolLabel(step.toolCall) }}</span>
+                <span v-if="step.toolCall.status === 'calling'" class="tool-step-spinner" />
               </div>
             </div>
           </template>
@@ -180,28 +185,23 @@ const hasLegacySteps = computed(() => hasLegacyThinking.value || hasLegacyToolCa
           <div v-if="hasLegacyThinking" class="think-block">{{ combinedThinking }}</div>
           <!-- Legacy tool calls (inside collapse) -->
           <div v-for="tc in toolCalls" :key="tc.id" class="tool-step">
-            <div
-              class="tool-step-header"
-              :class="{ clickable: tc.status === 'done' }"
-              @click="tc.status === 'done' && toggleTool(tc.id)"
-            >
-              <span class="tool-step-icon">{{ stepIcon(tc.name) }}</span>
-              <span class="tool-step-label">{{ toolLabel(tc) }}</span>
-              <span v-if="tc.status === 'done'" class="tool-step-toggle">
-                {{ expandedTools[tc.id] ? '收起 ▲' : '展开 ▶' }}
-              </span>
-              <span v-else-if="tc.status === 'calling'" class="tool-step-spinner" />
-            </div>
-            <div
-              v-if="tc.status === 'done' && expandedTools[tc.id]"
-              class="tool-step-body"
-            >
-              <ToolCallBubble
-                :tool-call="tc"
-                :in-turn="true"
-                @select-detail="handleSelectDetail"
-              />
-            </div>
+            <!-- Search result — click opens right panel -->
+            <template v-if="tc.name === 'web_search'">
+              <div class="tool-step-header clickable" @click="handleToolClick(tc)">
+                <span class="tool-step-icon">{{ stepIcon(tc.name) }}</span>
+                <span class="tool-step-label">{{ toolLabel(tc) }}</span>
+                <span v-if="tc.status === 'done'" class="tool-step-toggle">查看 →</span>
+                <span v-else-if="tc.status === 'calling'" class="tool-step-spinner" />
+              </div>
+            </template>
+            <!-- Other tool calls — label only, no expand -->
+            <template v-else>
+              <div class="tool-step-header">
+                <span class="tool-step-icon">{{ stepIcon(tc.name) }}</span>
+                <span class="tool-step-label">{{ toolLabel(tc) }}</span>
+                <span v-if="tc.status === 'calling'" class="tool-step-spinner" />
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -224,7 +224,7 @@ const hasLegacySteps = computed(() => hasLegacyThinking.value || hasLegacyToolCa
 
 <style scoped>
 .assistant-turn {
-  margin: 4px 0 12px;
+  margin: 0;
 }
 
 /* ── Thinking section ── */
@@ -241,13 +241,13 @@ const hasLegacySteps = computed(() => hasLegacyThinking.value || hasLegacyToolCa
   user-select: none;
 }
 
-.think-header-icon { font-size: 15px; color: #999; flex-shrink: 0; }
-.think-header-label { font-size: 14px; color: #666; }
+.think-header-icon { font-size: 15px; color: var(--text-tertiary); flex-shrink: 0; }
+.think-header-label { font-size: 14px; color: var(--text-secondary); }
 
 .think-toggle {
   margin-left: auto;
   font-size: 12px;
-  color: #ff9500;
+  color: var(--accent);
   flex-shrink: 0;
 }
 
@@ -257,13 +257,10 @@ const hasLegacySteps = computed(() => hasLegacyThinking.value || hasLegacyToolCa
 
 .think-block {
   margin: 0;
-  padding: 10px 15px;
-  background: #f8f9fa;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #333;
+  padding: 6px 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -292,20 +289,20 @@ const hasLegacySteps = computed(() => hasLegacyThinking.value || hasLegacyToolCa
   cursor: pointer;
 }
 
-.tool-step-icon { font-size: 15px; color: #999; flex-shrink: 0; }
-.tool-step-label { color: #666; font-weight: 400; }
+.tool-step-icon { font-size: 15px; color: var(--text-tertiary); flex-shrink: 0; }
+.tool-step-label { color: var(--text-secondary); font-weight: 400; }
 
 .tool-step-toggle {
   margin-left: auto;
   font-size: 12px;
-  color: #ff9500;
+  color: var(--accent);
   flex-shrink: 0;
 }
 
 .tool-step-spinner {
   width: 12px; height: 12px;
-  border: 2px solid #e0e0e0;
-  border-top-color: #ff9500;
+  border: 2px solid var(--border-default);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   margin-left: auto;
@@ -318,13 +315,13 @@ const hasLegacySteps = computed(() => hasLegacyThinking.value || hasLegacyToolCa
 
 /* ── Answer ── */
 .answer-step {
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 /* ── Streaming hint ── */
 .streaming-hint {
   font-size: 13px;
-  color: #ff9500;
+  color: var(--accent);
   animation: pulse 1.5s ease-in-out infinite;
 }
 @keyframes pulse {

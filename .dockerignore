@@ -1,0 +1,12 @@
+.git/
+.idea/
+.vscode/
+target/
+frontend/node_modules/
+frontend/dist/
+src/main/resources/application.yml
+src/main/resources/static/
+.env
+plans/
+*.md
+.DS_Store

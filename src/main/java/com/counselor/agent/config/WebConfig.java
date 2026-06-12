@@ -2,6 +2,7 @@ package com.counselor.agent.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
@@ -15,6 +16,7 @@ import java.io.IOException;
 public class WebConfig {
 
     @Bean
+    @Profile("!prod")
     public WebMvcConfigurer webMvcConfigurer() {
         return new WebMvcConfigurer() {
             @Override

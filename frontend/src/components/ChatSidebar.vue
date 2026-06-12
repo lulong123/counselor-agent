@@ -1,18 +1,15 @@
 <script setup lang="ts">
-import { AGENTS, type Agent, type Thread } from '@/types/api'
+import type { Thread } from '@/types/api'
+import { ChatDotRound } from '@element-plus/icons-vue'
 
 defineProps<{
   threads: Thread[]
   activeThreadId?: string | null
-  activeAgent?: Agent | null
-  teacherId: string
 }>()
 
 const emit = defineEmits<{
-  'update:teacherId': [value: string]
   'select-thread': [threadId: string]
   'new-thread': []
-  'quick-prompt': [text: string]
   'delete-thread': [threadId: string]
 }>()
 
@@ -20,113 +17,220 @@ function onDeleteThread(threadId: string, event: Event) {
   event.stopPropagation()
   emit('delete-thread', threadId)
 }
+
+function formatDate(dateStr?: string) {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  const now = new Date()
+  const diff = now.getTime() - d.getTime()
+  if (diff < 86400000) {
+    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  }
+  return dateStr.slice(5, 10)
+}
 </script>
 
 <template>
   <aside class="sidebar">
-    <div class="brand">
-      <span class="brand-icon">枢</span>
-      <div>
-        <h1>枢衡 Shuheng</h1>
-        <p class="brand-sub">辅导员 AI 工作台</p>
-      </div>
+    <!-- Brand -->
+    <div class="sidebar-brand">
+      <span class="brand-text">高校辅导员助手</span>
     </div>
 
-    <el-input
-      :model-value="teacherId"
-      placeholder="辅导员编号"
-      size="small"
-      @update:model-value="(v: string) => emit('update:teacherId', v)"
-    />
+    <!-- New conversation -->
+    <button class="new-chat-btn" @click="emit('new-thread')">
+      <el-icon size="16"><ChatDotRound /></el-icon>
+      <span>新对话</span>
+    </button>
 
-    <div>
-      <p class="section-title">AI 助理</p>
-      <div class="agent-grid">
+    <!-- Thread list -->
+    <div class="sidebar-section">
+      <span class="section-label">历史对话</span>
+
+      <div v-if="threads.length" class="thread-list">
         <div
-          v-for="a in AGENTS" :key="a.id"
-          class="agent-card"
-          :class="{ active: activeAgent?.id === a.id }"
-          @click="emit('quick-prompt', `帮${a.desc.slice(2, 18)}…`)"
+          v-for="t in threads"
+          :key="t.id"
+          class="thread-item"
+          :class="{ active: t.id === activeThreadId }"
+          @click="emit('select-thread', t.id)"
         >
-          <span class="agent-icon">{{ a.icon }}</span>
-          <div>
-            <div class="agent-name">{{ a.name }}</div>
-            <div class="agent-duty">{{ a.duty }}</div>
+          <div class="thread-main">
+            <span class="thread-title">{{ t.title || '新对话' }}</span>
+            <span class="thread-time">{{ formatDate(t.updatedAt) }}</span>
           </div>
+          <button
+            class="thread-delete"
+            title="删除对话"
+            @click="(e) => onDeleteThread(t.id, e)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14"/></svg>
+          </button>
         </div>
       </div>
-    </div>
 
-    <div v-if="threads.length" class="thread-section">
-      <div class="thread-section-header">
-        <p class="section-title">最近对话</p>
-        <el-button size="small" text type="primary" @click="emit('new-thread')">+ 新建</el-button>
+      <div v-else class="thread-empty">
+        <p class="empty-text">暂无对话</p>
+        <p class="empty-hint">点击上方开始新对话</p>
       </div>
-      <div
-        v-for="t in threads"
-        :key="t.id"
-        class="thread-item"
-        :class="{ active: t.id === activeThreadId }"
-        @click="emit('select-thread', t.id)"
-      >
-        <span class="thread-title-text">{{ t.title || '新对话' }}</span>
-        <span class="thread-time">{{ t.updatedAt?.slice(5, 10) }}</span>
-        <button class="thread-delete-btn" title="删除对话" @click="(e) => onDeleteThread(t.id, e)">×</button>
-      </div>
-    </div>
-
-    <div v-else class="thread-section">
-      <p class="section-title">对话</p>
-      <el-button size="small" type="primary" plain @click="emit('new-thread')">开始新对话</el-button>
     </div>
   </aside>
 </template>
 
 <style scoped>
 .sidebar {
-  width: 280px; flex-shrink: 0; background: #fefcf5;
-  border-right: 1px solid #e8dcc8;
-  display: flex; flex-direction: column; gap: 16px;
-  padding: 16px; overflow-y: auto;
+  width: 270px;
+  flex-shrink: 0;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-default);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  user-select: none;
 }
-.brand { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid #e8dcc8; }
-.brand-icon {
-  width: 40px; height: 40px; display: grid; place-items: center;
-  border-radius: 8px; background: linear-gradient(135deg, #c8881a, #9a6510);
-  color: #fff; font-size: 20px; font-weight: 800;
+
+/* ── Brand ── */
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  padding: 20px 20px 16px;
 }
-.brand h1 { font-size: 17px; font-weight: 700; margin: 0; }
-.brand-sub { font-size: 11px; color: #9b8e7a; margin: 0; }
-.section-title { font-size: 11px; font-weight: 700; color: #9b8e7a; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
-.agent-grid { display: flex; flex-direction: column; gap: 3px; }
-.agent-card {
-  display: flex; align-items: center; gap: 8px; padding: 7px 8px;
-  border-radius: 8px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s;
+.brand-text {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.3px;
 }
-.agent-card:hover { background: rgba(200, 136, 26, 0.06); border-color: #f5e6c8; }
-.agent-card.active { background: #f5e6c8; border-color: #c8881a; }
-.agent-icon {
-  width: 30px; height: 30px; display: grid; place-items: center;
-  border-radius: 6px; background: linear-gradient(135deg, #d4a853, #b8860b);
-  color: #fff; font-size: 13px; font-weight: 800; flex-shrink: 0;
+
+/* ── New chat ── */
+.new-chat-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 16px 20px;
+  padding: 9px 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s var(--ease-out);
+  font-family: inherit;
 }
-.agent-name { font-size: 12px; font-weight: 600; line-height: 1.3; }
-.agent-duty { font-size: 10px; color: #9b8e7a; line-height: 1.3; }
-.thread-section { border-top: 1px solid #e8dcc8; padding-top: 12px; }
-.thread-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.new-chat-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ── Section label ── */
+.sidebar-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-tertiary);
+  padding: 0 20px 8px;
+}
+
+/* ── Thread list ── */
+.thread-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
 .thread-item {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 10px; border-radius: 8px; cursor: pointer; transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.12s var(--ease-out);
 }
-.thread-item:hover { background: rgba(200, 136, 26, 0.04); }
-.thread-item.active { background: rgba(200, 136, 26, 0.1); }
-.thread-title-text { font-size: 13px; color: #4a3f2f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.thread-time { font-size: 10px; color: #9b8e7a; margin-left: 8px; white-space: nowrap; }
-.thread-delete-btn {
-  display: none; margin-left: 4px; padding: 0 4px; border: none; background: none;
-  color: #c88; font-size: 16px; font-weight: 700; cursor: pointer; line-height: 1;
-  border-radius: 4px; transition: all 0.15s;
+.thread-item:hover {
+  background: var(--bg-sidebar-hover);
 }
-.thread-item:hover .thread-delete-btn { display: inline; }
-.thread-delete-btn:hover { background: #fdd; color: #c33; }
+.thread-item.active {
+  background: var(--bg-sidebar-active);
+}
+.thread-item.active .thread-title {
+  color: var(--text-primary);
+}
+
+.thread-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.thread-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.thread-delete {
+  display: none;
+  margin-left: 6px;
+  padding: 4px;
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.12s;
+  flex-shrink: 0;
+  line-height: 0;
+}
+.thread-item:hover .thread-delete {
+  display: block;
+}
+.thread-delete:hover {
+  background: #fdd;
+  color: #c33;
+}
+
+/* ── Empty ── */
+.thread-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 20px;
+}
+.empty-text {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  margin: 0;
+}
+.empty-hint {
+  font-size: 11px;
+  color: #c4b99a;
+  margin: 0;
+}
 </style>

@@ -8,7 +8,8 @@
       "Bash(git commit *)",
       "Bash(java -version)",
       "Bash(rm -rf /Users/luwenlong/Documents/后端项目/counselor-agent/src/main/resources/static/assets/*)",
-      "Bash(cp -r /Users/luwenlong/Documents/后端项目/counselor-agent/frontend/dist/* /Users/luwenlong/Documents/后端项目/counselor-agent/src/main/resources/static/)"
+      "Bash(cp -r /Users/luwenlong/Documents/后端项目/counselor-agent/frontend/dist/* /Users/luwenlong/Documents/后端项目/counselor-agent/src/main/resources/static/)",
+      "Bash(npm run *)"
     ]
   }
 }

@@ -15,3 +15,7 @@ target/
 # === OS ===
 .DS_Store
 Thumbs.db
+
+# === Docker 部署 ===
+.env
+frontend/dist/
