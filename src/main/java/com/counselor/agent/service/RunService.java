@@ -233,7 +233,7 @@ public class RunService {
 
                     systemPrompt = agent.getSystemPrompt();
                     tools.addAll(agent.getTools());
-                    runToolLoop(systemPrompt, userInput, tools, run, threadId, teacherId, deepThinking, emitter, runId, startTime);
+                    runToolLoop(systemPrompt, userInput, tools, run, threadId, teacherId, deepThinking, emitter, runId, startTime, emitterClosed);
                     return;
                 }
             }
@@ -243,7 +243,7 @@ public class RunService {
             taskRepository.save(run);
             sendEvent(emitter, "stage", Map.of("stage", "STREAMING", "agent", "chief", "agentName", "枢衡"));
 
-            runToolLoop(FALLBACK_PROMPT, userInput, tools, run, threadId, teacherId, deepThinking, emitter, runId, startTime);
+            runToolLoop(FALLBACK_PROMPT, userInput, tools, run, threadId, teacherId, deepThinking, emitter, runId, startTime, emitterClosed);
 
         } catch (Exception e) {
             log.error("Run failed: runId={}", run.getId(), e);
@@ -268,7 +268,7 @@ public class RunService {
     private void runToolLoop(String systemPrompt, String userInput,
                               List<FunctionCallback> tools, Task run,
                               String threadId, String teacherId, boolean deepThinking, SseEmitter emitter,
-                              long runId, long startTime) {
+                              long runId, long startTime, AtomicBoolean emitterClosed) {
         StringBuilder fullResponse = new StringBuilder();
         StringBuilder fullReasoning = new StringBuilder();
         List<org.springframework.ai.chat.messages.Message> messages = new ArrayList<>();
@@ -308,7 +308,7 @@ public class RunService {
                 // Spring AI's .stream() uses WebClient (no interceptor), and worse,
                 // doesn't set stream=true in the request. We bypass it entirely.
                 AssistantMessage aiMsg = rawStreamingCall(
-                    prompt, tools, modelName, deepThinking, emitter, fullReasoning, runId);
+                    prompt, tools, modelName, deepThinking, emitter, fullReasoning, runId, emitterClosed);
 
                 if (aiMsg.hasToolCalls()) {
                     toolsUsed = true;
@@ -348,7 +348,7 @@ public class RunService {
 
                 try {
                     AssistantMessage finalMsg = rawStreamingCall(
-                        streamPrompt, List.of(), modelName, deepThinking, emitter, fullReasoning, runId);
+                        streamPrompt, List.of(), modelName, deepThinking, emitter, fullReasoning, runId, emitterClosed);
                     if (finalMsg.getText() != null) {
                         fullResponse.append(finalMsg.getText());
                     }
@@ -395,7 +395,8 @@ public class RunService {
     private AssistantMessage rawStreamingCall(
             List<org.springframework.ai.chat.messages.Message> prompt,
             List<FunctionCallback> tools, String model, boolean deepThinking,
-            SseEmitter emitter, StringBuilder reasoningSink, long runId) {
+            SseEmitter emitter, StringBuilder reasoningSink, long runId,
+            AtomicBoolean emitterClosed) {
         StringBuilder fullText = new StringBuilder();
         LinkedHashMap<Integer, ToolCallAccumulator> tcAccum = new LinkedHashMap<>();
 
@@ -501,6 +502,10 @@ public class RunService {
                         int chunkCount = 0;
                         long firstChunkTime = 0;
                         while ((line = reader.readLine()) != null) {
+                            if (emitterClosed.get()) {
+                                log.info("[SSE-{}] Client disconnected, aborting stream at chunk {}", runId, chunkCount);
+                                break;
+                            }
                             if (firstChunkTime == 0) firstChunkTime = System.currentTimeMillis();
                             if (line.isBlank()) continue;
                             if (!line.startsWith("data:")) continue;
@@ -684,10 +689,10 @@ public class RunService {
         try {
             emitter.send(SseEmitter.event().name(name).data(data));
         } catch (IOException ex) {
-            log.warn("[SEND] IO error for event {} — {}", name, ex.getMessage());
+            log.debug("[SEND] IO error for event {} — {}", name, ex.getMessage());
         } catch (IllegalStateException ex) {
             // emitter already completed — client disconnected, expected
-            log.warn("[SEND] emitter closed for event {}", name);
+            log.debug("[SEND] emitter closed for event {}", name);
         }
     }
 
