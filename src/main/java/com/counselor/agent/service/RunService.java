@@ -188,11 +188,12 @@ public class RunService {
             long classifyStart = System.currentTimeMillis();
             TaskIntent intent;
             try {
-                intent = java.util.concurrent.CompletableFuture
-                    .supplyAsync(() -> chiefAgent.analyze(userInput))
-                    .get(30, java.util.concurrent.TimeUnit.SECONDS);
+                java.util.concurrent.CompletableFuture<TaskIntent> classifyFuture =
+                    java.util.concurrent.CompletableFuture
+                        .supplyAsync(() -> chiefAgent.analyze(userInput));
+                intent = classifyFuture.get(15, java.util.concurrent.TimeUnit.SECONDS);
             } catch (java.util.concurrent.TimeoutException e) {
-                log.error("[RUN-{}] chiefAgent.analyze() TIMEOUT after 30s — falling back to chief", runId);
+                log.error("[RUN-{}] chiefAgent.analyze() TIMEOUT after 15s — falling back to chief", runId);
                 intent = new TaskIntent(null, 0, TaskIntent.RISK_LOW, "分类超时，降级为通用模式");
             } catch (Exception e) {
                 log.error("[RUN-{}] chiefAgent.analyze() FAILED — falling back to chief: {}", runId, e.getMessage());
@@ -472,6 +473,8 @@ public class RunService {
                 if (attempt > 0) {
                     int delaySec = attempt; // 1s, 2s, 3s, 4s, 5s
                     log.info("DeepSeek retry attempt {}/{} after {}s...", attempt + 1, maxAttempts, delaySec);
+                    safeSend(emitter, "progress", Map.of("message",
+                        "正在重试连接 (" + (attempt + 1) + "/" + maxAttempts + ")..."));
                     try { Thread.sleep(delaySec * 1000L); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
                 }
                 try {

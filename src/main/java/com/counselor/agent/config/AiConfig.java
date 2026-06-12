@@ -26,7 +26,7 @@ public class AiConfig {
     @Bean
     public HttpClient sharedHttpClient() {
         return HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
+            .connectTimeout(Duration.ofSeconds(5))
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
     }
