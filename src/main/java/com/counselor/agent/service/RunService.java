@@ -90,14 +90,12 @@ public class RunService {
     private boolean searchEnabled;
 
     private final RestClient.Builder restClientBuilder;
-    private final HttpClient sharedHttpClient;
 
     public RunService(TaskRepository taskRepository, ThreadRepository threadRepository,
                       MessageRepository messageRepository, ChiefAgent chiefAgent,
                       AgentRouter router, ChatClient chatClient,
                       WebSearchTool webSearchTool, WebFetchTool webFetchTool,
-                      ObjectMapper objectMapper, RestClient.Builder restClientBuilder,
-                      HttpClient sharedHttpClient) {
+                      ObjectMapper objectMapper, RestClient.Builder restClientBuilder) {
         this.taskRepository = taskRepository;
         this.threadRepository = threadRepository;
         this.messageRepository = messageRepository;
@@ -108,7 +106,6 @@ public class RunService {
         this.webFetchTool = webFetchTool;
         this.objectMapper = objectMapper;
         this.restClientBuilder = restClientBuilder;
-        this.sharedHttpClient = sharedHttpClient;
     }
 
     private static final java.util.concurrent.atomic.AtomicLong runCounter = new java.util.concurrent.atomic.AtomicLong(0);
@@ -476,8 +473,10 @@ public class RunService {
                 log.error("[SSE-{}] DNS FAILED for api.deepseek.com: {}", runId, dnsErr.getMessage());
             }
 
-            // Use shared HttpClient — connection pool keeps TCP warm between requests
-            JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(sharedHttpClient);
+            // Fresh HttpClient per attempt — no connection pooling, no stale connections.
+            // Each retry gets a brand new TCP connection.
+            JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build());
             factory.setReadTimeout(Duration.ofSeconds(600));
             RestClient rawClient = restClientBuilder.requestFactory(factory).build();
 

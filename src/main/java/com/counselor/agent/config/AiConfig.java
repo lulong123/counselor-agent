@@ -19,26 +19,17 @@ public class AiConfig {
     private static final Logger log = LoggerFactory.getLogger(AiConfig.class);
 
     /**
-     * Shared, long-lived HttpClient with connection pooling.
-     * Reusing this across requests keeps TCP connections warm — critical for
-     * production where new connections to api.deepseek.com intermittently time out.
+     * RestClient.Builder for DeepSeek API calls.
+     * Creates a NEW HttpClient per request — no connection pooling.
+     * This avoids stale-connection bugs where pooled connections die after
+     * idle periods but the client doesn't detect it until timeout.
      */
     @Bean
-    public HttpClient sharedHttpClient() {
-        return HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
-            .followRedirects(HttpClient.Redirect.NORMAL)
-            .build();
-    }
-
-    /**
-     * Custom RestClient.Builder that intercepts DeepSeek API responses to
-     * capture {@code reasoning_content} (model's chain-of-thought) before
-     * Spring AI discards it.
-     */
-    @Bean
-    public RestClient.Builder restClientBuilder(HttpClient sharedHttpClient) {
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(sharedHttpClient);
+    public RestClient.Builder restClientBuilder() {
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
+            HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(5))
+                .build());
         factory.setReadTimeout(Duration.ofSeconds(60));
 
         return RestClient.builder()
