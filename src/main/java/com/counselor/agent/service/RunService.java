@@ -183,21 +183,30 @@ public class RunService {
         try {
             sendEvent(emitter, "metadata", Map.of("run_id", run.getId(), "thread_id", threadId));
 
-            // Phase 0: Classification — fast, non-streaming, with timeout protection
+            // Phase 0: Classification — retry up to 3 times, 10s each, with progress events
             log.info("[RUN-{}] Calling chiefAgent.analyze()...", runId);
             long classifyStart = System.currentTimeMillis();
-            TaskIntent intent;
-            try {
-                java.util.concurrent.CompletableFuture<TaskIntent> classifyFuture =
-                    java.util.concurrent.CompletableFuture
-                        .supplyAsync(() -> chiefAgent.analyze(userInput));
-                intent = classifyFuture.get(15, java.util.concurrent.TimeUnit.SECONDS);
-            } catch (java.util.concurrent.TimeoutException e) {
-                log.error("[RUN-{}] chiefAgent.analyze() TIMEOUT after 15s — falling back to chief", runId);
+            TaskIntent intent = null;
+            safeSend(emitter, "progress", Map.of("message", "正在分析问题..."));
+            for (int ci = 0; ci < 3; ci++) {
+                try {
+                    intent = java.util.concurrent.CompletableFuture
+                        .supplyAsync(() -> chiefAgent.analyze(userInput))
+                        .get(10, java.util.concurrent.TimeUnit.SECONDS);
+                    break;
+                } catch (java.util.concurrent.TimeoutException e) {
+                    log.warn("[RUN-{}] chiefAgent attempt {}/3 timed out (10s)", runId, ci + 1);
+                    if (ci < 2) safeSend(emitter, "progress",
+                        Map.of("message", "分类重试中 (" + (ci + 2) + "/3)..."));
+                } catch (Exception e) {
+                    log.warn("[RUN-{}] chiefAgent attempt {}/3 failed: {}", runId, ci + 1, e.getMessage());
+                    if (ci < 2) safeSend(emitter, "progress",
+                        Map.of("message", "分类重试中 (" + (ci + 2) + "/3)..."));
+                }
+            }
+            if (intent == null) {
+                log.error("[RUN-{}] chiefAgent all 3 attempts failed — falling back to chief", runId);
                 intent = new TaskIntent(null, 0, TaskIntent.RISK_LOW, "分类超时，降级为通用模式");
-            } catch (Exception e) {
-                log.error("[RUN-{}] chiefAgent.analyze() FAILED — falling back to chief: {}", runId, e.getMessage());
-                intent = new TaskIntent(null, 0, TaskIntent.RISK_LOW, "分类异常: " + e.getMessage());
             }
             log.info("[RUN-{}] Classification done — agentId={}, elapsed={}ms", runId, intent.agentId(), System.currentTimeMillis() - classifyStart);
             run.setIntent(intent.agentId()); run.setAgentId(intent.agentId()); run.setRisk(intent.risk());
