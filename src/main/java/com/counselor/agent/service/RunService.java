@@ -352,9 +352,8 @@ public class RunService {
                     }
                 }
             } else if (lastResponseText != null && !lastResponseText.isBlank()) {
-                // No tools used → chunk already-generated text
+                // No tools used — text was already streamed in real-time by rawStreamingCall
                 fullResponse.append(lastResponseText);
-                streamTextInChunks(lastResponseText, emitter);
             }
 
             if (fullResponse.isEmpty()) {

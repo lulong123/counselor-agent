@@ -94,6 +94,12 @@ public class ReasoningCaptureInterceptor implements ClientHttpRequestInterceptor
             return wrapStreaming(response, emitter);
         }
 
+        // Streaming but no emitter registered — pass through without buffering.
+        // rawStreamingCall handles reasoning extraction itself.
+        if (isStream) {
+            return response;
+        }
+
         // ── Non-streaming: buffer the full response ──
         byte[] raw = response.getBody().readAllBytes();
         extractAndStore(new String(raw, StandardCharsets.UTF_8));
