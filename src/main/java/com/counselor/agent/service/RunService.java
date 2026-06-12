@@ -113,6 +113,9 @@ public class RunService {
 
     private static final java.util.concurrent.atomic.AtomicLong runCounter = new java.util.concurrent.atomic.AtomicLong(0);
 
+    /** Timestamp of last successful DeepSeek connection (epoch millis). Used to detect stale connections. */
+    private static final java.util.concurrent.atomic.AtomicLong lastSuccessTime = new java.util.concurrent.atomic.AtomicLong(0);
+
     public void processRun(String threadId, String teacherId, String userInput, boolean deepThinking, SseEmitter emitter) {
         long runId = runCounter.incrementAndGet();
         long startTime = System.currentTimeMillis();
@@ -456,7 +459,10 @@ public class RunService {
             body.put("reasoning_effort", deepThinking ? "medium" : "low");
 
             String requestJson = objectMapper.writeValueAsString(body);
-            log.info("[SSE-{}] Raw SSE call — model={}, bodyLen={}", runId, model, requestJson.length());
+            long idleMs = lastSuccessTime.get() > 0 ? System.currentTimeMillis() - lastSuccessTime.get() : -1;
+            log.info("[SSE-{}] Raw SSE call — model={}, bodyLen={}, idleSinceLastSuccess={}ms{}",
+                runId, model, requestJson.length(), idleMs,
+                idleMs > 30000 ? " (NEW CONNECTION expected)" : idleMs > 0 ? " (may reuse pooled)" : " (first request)");
 
             // DNS pre-check: resolve api.deepseek.com to see if DNS is the issue
             try {
@@ -496,6 +502,7 @@ public class RunService {
                         .body(requestJson)
                         .exchange((req, resp) -> {
                     log.info("[SSE-{}] HTTP connected — status={}, elapsed={}ms", runId, resp.getStatusCode().value(), System.currentTimeMillis() - sseStart);
+                    lastSuccessTime.set(System.currentTimeMillis());
                     try (BufferedReader reader = new BufferedReader(
                             new InputStreamReader(resp.getBody(), StandardCharsets.UTF_8))) {
                         String line;
