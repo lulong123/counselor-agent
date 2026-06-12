@@ -179,8 +179,22 @@ public class RunService {
         try {
             sendEvent(emitter, "metadata", Map.of("run_id", run.getId(), "thread_id", threadId));
 
-            // Phase 0: Classification — fast, non-streaming
-            TaskIntent intent = chiefAgent.analyze(userInput);
+            // Phase 0: Classification — fast, non-streaming, with timeout protection
+            log.info("[RUN-{}] Calling chiefAgent.analyze()...", runId);
+            long classifyStart = System.currentTimeMillis();
+            TaskIntent intent;
+            try {
+                intent = java.util.concurrent.CompletableFuture
+                    .supplyAsync(() -> chiefAgent.analyze(userInput))
+                    .get(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (java.util.concurrent.TimeoutException e) {
+                log.error("[RUN-{}] chiefAgent.analyze() TIMEOUT after 30s — falling back to chief", runId);
+                intent = new TaskIntent(null, 0, TaskIntent.RISK_LOW, "分类超时，降级为通用模式");
+            } catch (Exception e) {
+                log.error("[RUN-{}] chiefAgent.analyze() FAILED — falling back to chief: {}", runId, e.getMessage());
+                intent = new TaskIntent(null, 0, TaskIntent.RISK_LOW, "分类异常: " + e.getMessage());
+            }
+            log.info("[RUN-{}] Classification done — agentId={}, elapsed={}ms", runId, intent.agentId(), System.currentTimeMillis() - classifyStart);
             run.setIntent(intent.agentId()); run.setAgentId(intent.agentId()); run.setRisk(intent.risk());
             run.setThinking(intent.reasoning());
 
