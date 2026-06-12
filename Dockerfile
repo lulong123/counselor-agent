@@ -17,5 +17,7 @@ EXPOSE 8081
 ENTRYPOINT ["java", \
     "-Djava.net.preferIPv4Stack=true", \
     "-Dnetworkaddress.cache.ttl=60", \
+    "-Djdk.httpclient.keepalive.timeout=30", \
+    "-Djdk.httpclient.connectionPoolSize=5", \
     "-jar", "app.jar", \
     "--spring.profiles.active=prod"]
