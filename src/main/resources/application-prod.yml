@@ -6,6 +6,10 @@ spring:
     openai:
       api-key: ${DEEPSEEK_API_KEY}
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      chat:
+        options:
+          model: deepseek-v4-pro
+          temperature: 0.3
   datasource:
     url: ${DB_URL}
     username: ${DB_USERNAME}
@@ -15,6 +19,9 @@ spring:
     hibernate:
       ddl-auto: update
     show-sql: false
+  mvc:
+    async:
+      request-timeout: 300000
 
 management:
   endpoints:
@@ -38,5 +45,12 @@ logging:
 
 counselor:
   search:
+    enabled: true
+    provider: zhipu
     zhipu:
       api-key: ${ZHIPU_API_KEY}
+    max-results: 5
+    max-extract-urls: 10
+    max-iterations: 3
+    llm-max-concurrency: 2
+    timeout-seconds: 30

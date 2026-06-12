@@ -1,6 +1,14 @@
 import { ref, type Ref } from 'vue'
 import { AGENT_MAP, type Agent, type Message } from '@/types/api'
 
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
@@ -84,17 +92,22 @@ export function useChatStream({ teacherId, messages }: UseChatStreamOptions) {
     deepThinking: boolean,
     onAgentChange?: (agent: Agent | null) => void,
   ) {
-    if (!content.trim() || isStreaming.value) return
+    if (!content.trim() || isStreaming.value) {
+      console.warn('[send] blocked:', { content: content.trim(), isStreaming: isStreaming.value })
+      return
+    }
+
+    console.log('[send] start:', { threadId, content })
 
     const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       role: 'user',
       content: content.trim(),
     }
     messages.value.push(userMsg)
 
     const assistantMsg: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       role: 'assistant',
       content: '',
       isStreaming: true,
@@ -115,12 +128,15 @@ export function useChatStream({ teacherId, messages }: UseChatStreamOptions) {
     let rawText = ''
 
     try {
+      console.log('[send] fetching:', `/api/threads/${threadId}/runs/stream`)
       const response = await fetch(`/api/threads/${threadId}/runs/stream`, {
         method: 'POST',
         headers: buildHeaders(),
         body: JSON.stringify({ content: content.trim(), deepThinking }),
         signal: abortController.value.signal,
       })
+
+      console.log('[send] response:', response.status)
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '')
@@ -272,6 +288,7 @@ export function useChatStream({ teacherId, messages }: UseChatStreamOptions) {
       }
     } catch (err: unknown) {
       const error = err as Error & { name?: string }
+      console.error('[send] error:', error.name, error.message)
       if (error.name !== 'AbortError') {
         assistant.content = rawText || `请求失败：${error.message}`
       }

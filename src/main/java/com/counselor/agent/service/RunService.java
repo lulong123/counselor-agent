@@ -30,14 +30,23 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import org.springframework.http.client.JdkClientHttpRequestFactory;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -79,11 +88,13 @@ public class RunService {
     @Value("${counselor.search.enabled:false}")
     private boolean searchEnabled;
 
+    private final RestClient.Builder restClientBuilder;
+
     public RunService(TaskRepository taskRepository, ThreadRepository threadRepository,
                       MessageRepository messageRepository, ChiefAgent chiefAgent,
                       AgentRouter router, ChatClient chatClient,
                       WebSearchTool webSearchTool, WebFetchTool webFetchTool,
-                      ObjectMapper objectMapper) {
+                      ObjectMapper objectMapper, RestClient.Builder restClientBuilder) {
         this.taskRepository = taskRepository;
         this.threadRepository = threadRepository;
         this.messageRepository = messageRepository;
@@ -93,6 +104,7 @@ public class RunService {
         this.webSearchTool = webSearchTool;
         this.webFetchTool = webFetchTool;
         this.objectMapper = objectMapper;
+        this.restClientBuilder = restClientBuilder;
     }
 
     public void processRun(String threadId, String teacherId, String userInput, boolean deepThinking, SseEmitter emitter) {
@@ -124,6 +136,34 @@ public class RunService {
         userMsg.setThreadId(threadId); userMsg.setTeacherId(teacherId);
         userMsg.setRole("user"); userMsg.setContent(userInput); userMsg.setSeq(seq);
         messageRepository.save(userMsg);
+
+        // Track emitter lifecycle — prevent writes after client disconnects
+        AtomicBoolean emitterClosed = new AtomicBoolean(false);
+        emitter.onCompletion(() -> {
+            emitterClosed.set(true);
+            log.debug("SSE emitter completed normally");
+        });
+        emitter.onError(e -> {
+            emitterClosed.set(true);
+            log.debug("SSE emitter error: {}", e.getMessage());
+        });
+        emitter.onTimeout(() -> {
+            emitterClosed.set(true);
+            log.debug("SSE emitter timed out");
+        });
+
+        // Heartbeat: 每 15 秒发一个 SSE 注释，防止中间网络设备因空闲断开连接
+        AtomicBoolean heartbeatActive = new AtomicBoolean(true);
+        ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor();
+        ScheduledFuture<?> heartbeatFuture = heartbeat.scheduleAtFixedRate(() -> {
+            try {
+                if (heartbeatActive.get()) {
+                    emitter.send(SseEmitter.event().comment(""));
+                }
+            } catch (Exception ignored) {
+                heartbeatActive.set(false);
+            }
+        }, 15, 15, TimeUnit.SECONDS);
 
         try {
             sendEvent(emitter, "metadata", Map.of("run_id", run.getId(), "thread_id", threadId));
@@ -169,6 +209,10 @@ public class RunService {
         } catch (Exception e) {
             log.error("Run failed: runId={}", run.getId(), e);
             failRun(run, emitter, e);
+        } finally {
+            heartbeatActive.set(false);
+            heartbeatFuture.cancel(false);
+            heartbeat.shutdown();
         }
     }
 
@@ -372,15 +416,36 @@ public class RunService {
             String requestJson = objectMapper.writeValueAsString(body);
             log.info("Raw SSE call — model={}, bodyLen={}", model, requestJson.length());
 
-            // Use a fresh RestClient (no interceptor) — we process the stream directly
-            RestClient rawClient = RestClient.create();
-            rawClient.post()
-                .uri("https://api.deepseek.com/v1/chat/completions")
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.TEXT_EVENT_STREAM)
-                .header("Authorization", "Bearer " + deepseekApiKey)
-                .body(requestJson)
-                .exchange((req, resp) -> {
+            // Use JDK HttpClient (not HttpURLConnection) — works reliably on Alpine
+            // 30s connect timeout to handle CDN IP variations and slow routes
+            JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build());
+            factory.setReadTimeout(Duration.ofSeconds(600));
+            RestClient rawClient = restClientBuilder.requestFactory(factory).build();
+
+            // Exponential backoff retries: up to 4 attempts (2s, 4s, 8s delays)
+            Exception lastEx = null;
+            int maxAttempts = 4;
+            for (int attempt = 0; attempt < maxAttempts; attempt++) {
+                // On retry, force DNS re-resolution by re-creating HttpClient
+                if (attempt > 0) {
+                    int delaySec = (int) Math.pow(2, attempt); // 2s, 4s, 8s
+                    log.info("DeepSeek retry attempt {}/{} after {}s...", attempt + 1, maxAttempts, delaySec);
+                    try { Thread.sleep(delaySec * 1000L); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                    // Re-create factory to get fresh DNS resolution
+                    factory = new JdkClientHttpRequestFactory(
+                        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build());
+                    factory.setReadTimeout(Duration.ofSeconds(600));
+                    rawClient = restClientBuilder.requestFactory(factory).build();
+                }
+                try {
+                    rawClient.post()
+                        .uri("https://api.deepseek.com/v1/chat/completions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .header("Authorization", "Bearer " + deepseekApiKey)
+                        .body(requestJson)
+                        .exchange((req, resp) -> {
                     try (BufferedReader reader = new BufferedReader(
                             new InputStreamReader(resp.getBody(), StandardCharsets.UTF_8))) {
                         String line;
@@ -435,9 +500,24 @@ public class RunService {
                     }
                     return null;
                 });
+                    lastEx = null;
+                    break; // success
+                } catch (Exception e) {
+                    lastEx = e;
+                    log.warn("DeepSeek API error (attempt {}/{}): {} — {}", attempt + 1, maxAttempts,
+                        e.getClass().getSimpleName(), e.getMessage());
+                }
+            }
+            if (lastEx != null) {
+                log.error("DeepSeek API unreachable after {} attempts", maxAttempts);
+                throw new RuntimeException("DeepSeek API 连接失败，已重试 " + maxAttempts + " 次。请稍后重试。", lastEx);
+            }
 
-        } catch (IOException e) {
+        } catch (Exception e) {
+            // Catch-all: JsonProcessingException from serialization, RuntimeException from retry exhaustion
             log.error("Raw SSE call failed", e);
+            if (e instanceof RuntimeException re) throw re;
+            throw new RuntimeException("DeepSeek API 通信异常: " + e.getMessage(), e);
         }
 
         // Build tool call list
@@ -544,8 +624,11 @@ public class RunService {
     private void safeSend(SseEmitter emitter, String name, Object data) {
         try {
             emitter.send(SseEmitter.event().name(name).data(data));
-        } catch (IOException | IllegalStateException ex) {
-            log.warn("SSE send failed for event {}: {}", name, ex.getMessage());
+        } catch (IOException ex) {
+            log.debug("SSE send IO error for event {}: {}", name, ex.getMessage());
+        } catch (IllegalStateException ex) {
+            // emitter already completed — client disconnected, expected
+            log.debug("SSE send skipped (emitter closed) for event {}", name);
         }
     }
 

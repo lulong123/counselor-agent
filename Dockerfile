@@ -14,4 +14,8 @@ WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 RUN mkdir -p /app/logs
 EXPOSE 8081
-ENTRYPOINT ["java", "-jar", "app.jar", "--spring.profiles.active=prod"]
+ENTRYPOINT ["java", \
+    "-Djava.net.preferIPv4Stack=true", \
+    "-Dnetworkaddress.cache.ttl=60", \
+    "-jar", "app.jar", \
+    "--spring.profiles.active=prod"]

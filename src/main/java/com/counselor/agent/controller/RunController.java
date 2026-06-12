@@ -41,7 +41,7 @@ public class RunController {
 
         String teacherId = (String) request.getAttribute(TeacherFilter.TEACHER_ID_ATTR);
 
-        SseEmitter emitter = new SseEmitter(300_000L);
+        SseEmitter emitter = new SseEmitter(600_000L);
 
         // 异步处理，不阻塞 Controller 线程
         new Thread(() -> {
