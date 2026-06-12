@@ -107,7 +107,12 @@ public class RunService {
         this.restClientBuilder = restClientBuilder;
     }
 
+    private static final java.util.concurrent.atomic.AtomicLong runCounter = new java.util.concurrent.atomic.AtomicLong(0);
+
     public void processRun(String threadId, String teacherId, String userInput, boolean deepThinking, SseEmitter emitter) {
+        long runId = runCounter.incrementAndGet();
+        long startTime = System.currentTimeMillis();
+        log.info("[RUN-{}] processRun START — threadId={}, inputLen={}, deepThinking={}", runId, threadId, userInput.length(), deepThinking);
         com.counselor.agent.model.Thread thread = threadRepository.findById(threadId)
             .orElseGet(() -> {
                 com.counselor.agent.model.Thread t = new com.counselor.agent.model.Thread();
@@ -141,27 +146,33 @@ public class RunService {
         AtomicBoolean emitterClosed = new AtomicBoolean(false);
         emitter.onCompletion(() -> {
             emitterClosed.set(true);
-            log.debug("SSE emitter completed normally");
+            log.info("[RUN-{}] SSE emitter COMPLETED — elapsed={}ms", runId, System.currentTimeMillis() - startTime);
         });
         emitter.onError(e -> {
             emitterClosed.set(true);
-            log.debug("SSE emitter error: {}", e.getMessage());
+            log.warn("[RUN-{}] SSE emitter ERROR — elapsed={}ms, error={}", runId, System.currentTimeMillis() - startTime, e.getMessage());
         });
         emitter.onTimeout(() -> {
             emitterClosed.set(true);
-            log.debug("SSE emitter timed out");
+            log.warn("[RUN-{}] SSE emitter TIMEOUT — elapsed={}ms", runId, System.currentTimeMillis() - startTime);
         });
 
         // Heartbeat: 每 15 秒发一个 SSE 注释，防止中间网络设备因空闲断开连接
         AtomicBoolean heartbeatActive = new AtomicBoolean(true);
+        java.util.concurrent.atomic.AtomicInteger heartbeatCount = new java.util.concurrent.atomic.AtomicInteger(0);
         ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor();
         ScheduledFuture<?> heartbeatFuture = heartbeat.scheduleAtFixedRate(() -> {
             try {
                 if (heartbeatActive.get()) {
                     emitter.send(SseEmitter.event().comment(""));
+                    int count = heartbeatCount.incrementAndGet();
+                    if (count % 4 == 1) { // 每 60 秒打一次
+                        log.info("[RUN-{}] heartbeat OK — #{}, elapsed={}ms", runId, count, System.currentTimeMillis() - startTime);
+                    }
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
                 heartbeatActive.set(false);
+                log.warn("[RUN-{}] heartbeat FAILED — #{}, error={}, elapsed={}ms", runId, heartbeatCount.get() + 1, e.getMessage(), System.currentTimeMillis() - startTime);
             }
         }, 15, 15, TimeUnit.SECONDS);
 
@@ -194,7 +205,7 @@ public class RunService {
 
                     systemPrompt = agent.getSystemPrompt();
                     tools.addAll(agent.getTools());
-                    runToolLoop(systemPrompt, userInput, tools, run, threadId, teacherId, deepThinking, emitter);
+                    runToolLoop(systemPrompt, userInput, tools, run, threadId, teacherId, deepThinking, emitter, runId, startTime);
                     return;
                 }
             }
@@ -204,7 +215,7 @@ public class RunService {
             taskRepository.save(run);
             sendEvent(emitter, "stage", Map.of("stage", "STREAMING", "agent", "chief", "agentName", "枢衡"));
 
-            runToolLoop(FALLBACK_PROMPT, userInput, tools, run, threadId, teacherId, deepThinking, emitter);
+            runToolLoop(FALLBACK_PROMPT, userInput, tools, run, threadId, teacherId, deepThinking, emitter, runId, startTime);
 
         } catch (Exception e) {
             log.error("Run failed: runId={}", run.getId(), e);
@@ -228,7 +239,8 @@ public class RunService {
 
     private void runToolLoop(String systemPrompt, String userInput,
                               List<FunctionCallback> tools, Task run,
-                              String threadId, String teacherId, boolean deepThinking, SseEmitter emitter) {
+                              String threadId, String teacherId, boolean deepThinking, SseEmitter emitter,
+                              long runId, long startTime) {
         StringBuilder fullResponse = new StringBuilder();
         StringBuilder fullReasoning = new StringBuilder();
         List<org.springframework.ai.chat.messages.Message> messages = new ArrayList<>();
@@ -248,7 +260,7 @@ public class RunService {
         }
 
         String modelName = deepThinking ? "deepseek-v4-pro" : "deepseek-v4-flash";
-        log.info("Using model: {} (deepThinking={})", modelName, deepThinking);
+        log.info("[RUN-{}] runToolLoop START — model={}, deepThinking={}, tools={}", runId, modelName, deepThinking, tools.size());
 
         OpenAiChatOptions modelOptions = OpenAiChatOptions.builder()
                 .model(modelName)
@@ -268,7 +280,7 @@ public class RunService {
                 // Spring AI's .stream() uses WebClient (no interceptor), and worse,
                 // doesn't set stream=true in the request. We bypass it entirely.
                 AssistantMessage aiMsg = rawStreamingCall(
-                    prompt, tools, modelName, deepThinking, emitter, fullReasoning);
+                    prompt, tools, modelName, deepThinking, emitter, fullReasoning, runId);
 
                 if (aiMsg.hasToolCalls()) {
                     toolsUsed = true;
@@ -308,7 +320,7 @@ public class RunService {
 
                 try {
                     AssistantMessage finalMsg = rawStreamingCall(
-                        streamPrompt, List.of(), modelName, deepThinking, emitter, fullReasoning);
+                        streamPrompt, List.of(), modelName, deepThinking, emitter, fullReasoning, runId);
                     if (finalMsg.getText() != null) {
                         fullResponse.append(finalMsg.getText());
                     }
@@ -343,7 +355,8 @@ public class RunService {
 
         finishRun(run, threadId, teacherId,
             run.getAgentId() != null ? run.getAgentId() : "chief",
-            run.getRisk(), fullResponse.toString(), emitter, fullReasoning.toString());
+            run.getRisk(), fullResponse.toString(), emitter, fullReasoning.toString(),
+            runId, startTime);
     }
 
     /**
@@ -355,10 +368,11 @@ public class RunService {
     private AssistantMessage rawStreamingCall(
             List<org.springframework.ai.chat.messages.Message> prompt,
             List<FunctionCallback> tools, String model, boolean deepThinking,
-            SseEmitter emitter, StringBuilder reasoningSink) {
+            SseEmitter emitter, StringBuilder reasoningSink, long runId) {
         StringBuilder fullText = new StringBuilder();
         LinkedHashMap<Integer, ToolCallAccumulator> tcAccum = new LinkedHashMap<>();
 
+        long sseStart = System.currentTimeMillis();
         try {
             // Build request body matching OpenAI/DeepSeek API format
             List<Map<String, Object>> msgs = new ArrayList<>();
@@ -414,7 +428,7 @@ public class RunService {
             body.put("reasoning_effort", deepThinking ? "medium" : "low");
 
             String requestJson = objectMapper.writeValueAsString(body);
-            log.info("Raw SSE call — model={}, bodyLen={}", model, requestJson.length());
+            log.info("[SSE-{}] Raw SSE call — model={}, bodyLen={}", runId, model, requestJson.length());
 
             // Use JDK HttpClient (not HttpURLConnection) — works reliably on Alpine
             // 30s connect timeout to handle CDN IP variations and slow routes
@@ -446,14 +460,22 @@ public class RunService {
                         .header("Authorization", "Bearer " + deepseekApiKey)
                         .body(requestJson)
                         .exchange((req, resp) -> {
+                    log.info("[SSE-{}] HTTP connected — status={}, elapsed={}ms", runId, resp.getStatusCode().value(), System.currentTimeMillis() - sseStart);
                     try (BufferedReader reader = new BufferedReader(
                             new InputStreamReader(resp.getBody(), StandardCharsets.UTF_8))) {
                         String line;
+                        int chunkCount = 0;
+                        long firstChunkTime = 0;
                         while ((line = reader.readLine()) != null) {
+                            if (firstChunkTime == 0) firstChunkTime = System.currentTimeMillis();
                             if (line.isBlank()) continue;
                             if (!line.startsWith("data:")) continue;
+                            chunkCount++;
                             String json = line.substring(5).trim();
-                            if (json.equals("[DONE]")) break;
+                            if (json.equals("[DONE]")) {
+                                log.info("[SSE-{}] stream DONE — chunks={}, firstChunkLatency={}ms, total={}ms", runId, chunkCount, firstChunkTime > 0 ? firstChunkTime - sseStart : -1, System.currentTimeMillis() - sseStart);
+                                break;
+                            }
 
                             try {
                                 var root = objectMapper.readTree(json);
@@ -529,7 +551,7 @@ public class RunService {
             }
         }
 
-        log.info("Raw SSE done — text={} chars, toolCalls={}", fullText.length(), toolCalls.size());
+        log.info("[SSE-{}] Raw SSE done — text={} chars, toolCalls={}, elapsed={}ms", runId, fullText.length(), toolCalls.size(), System.currentTimeMillis() - sseStart);
         return new AssistantMessage(fullText.toString(), Map.of(), toolCalls);
     }
 
@@ -580,7 +602,10 @@ public class RunService {
 
     private void finishRun(Task run, String threadId, String teacherId,
                            String agentId, String risk, String fullResponse, SseEmitter emitter,
-                           String reasoningContent) {
+                           String reasoningContent, long runId, long startTime) {
+        long elapsed = System.currentTimeMillis() - startTime;
+        log.info("[RUN-{}] finishRun — agent={}, responseLen={}, reasoningLen={}, elapsed={}ms",
+            runId, agentId, fullResponse.length(), reasoningContent.length(), elapsed);
         run.setStatus(RunStatus.success);
 
         // Only save the full CoT reasoning, skip short classification text
@@ -625,10 +650,10 @@ public class RunService {
         try {
             emitter.send(SseEmitter.event().name(name).data(data));
         } catch (IOException ex) {
-            log.debug("SSE send IO error for event {}: {}", name, ex.getMessage());
+            log.warn("[SEND] IO error for event {} — {}", name, ex.getMessage());
         } catch (IllegalStateException ex) {
             // emitter already completed — client disconnected, expected
-            log.debug("SSE send skipped (emitter closed) for event {}", name);
+            log.warn("[SEND] emitter closed for event {}", name);
         }
     }
 

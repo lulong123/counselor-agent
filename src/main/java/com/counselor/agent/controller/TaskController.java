@@ -35,10 +35,12 @@ public class TaskController {
     public SseEmitter createTask(@RequestBody Map<String, String> body, HttpServletRequest request) {
         String content = body.get("content");
         if (content == null || content.isBlank()) {
+            log.warn("[TASK] Rejected: empty content");
             throw new IllegalArgumentException("content 不能为空");
         }
 
         String teacherId = (String) request.getAttribute(TeacherFilter.TEACHER_ID_ATTR);
+        log.info("[TASK] POST create — teacherId={}, contentLen={}", teacherId, content.length());
 
         Task task = new Task();
         task.setId(UUID.randomUUID().toString());

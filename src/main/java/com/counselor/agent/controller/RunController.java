@@ -35,11 +35,15 @@ public class RunController {
                                 HttpServletRequest request) {
         String content = body.get("content");
         if (content == null || content.isBlank()) {
+            log.warn("[STREAM] Rejected: empty content, threadId={}", threadId);
             throw new IllegalArgumentException("content 不能为空");
         }
         boolean deepThinking = "true".equals(body.get("deepThinking"));
 
         String teacherId = (String) request.getAttribute(TeacherFilter.TEACHER_ID_ATTR);
+
+        log.info("[STREAM] >>> POST /api/threads/{}/runs/stream — teacherId={}, contentLen={}, deepThinking={}",
+            threadId, teacherId, content.length(), deepThinking);
 
         SseEmitter emitter = new SseEmitter(600_000L);
 
