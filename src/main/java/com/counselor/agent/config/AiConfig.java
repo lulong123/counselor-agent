@@ -7,9 +7,13 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.client.ClientHttpRequest;
+import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import java.io.IOException;
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.time.Duration;
 
@@ -20,21 +24,31 @@ public class AiConfig {
 
     /**
      * RestClient.Builder for DeepSeek API calls.
-     * Creates a NEW HttpClient per request — no connection pooling.
-     * This avoids stale-connection bugs where pooled connections die after
-     * idle periods but the client doesn't detect it until timeout.
+     * Uses a custom ClientHttpRequestFactory that creates a NEW HttpClient
+     * for every single request — no connection pooling, no stale connections.
      */
     @Bean
     public RestClient.Builder restClientBuilder() {
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
-            HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(5))
-                .build());
-        factory.setReadTimeout(Duration.ofSeconds(60));
-
         return RestClient.builder()
-                .requestFactory(factory)
+                .requestFactory(new FreshHttpClientFactory())
                 .requestInterceptor(new ReasoningCaptureInterceptor());
+    }
+
+    /**
+     * A ClientHttpRequestFactory that creates a fresh JdkClientHttpRequestFactory
+     * (and thus a fresh HttpClient) for every request. This guarantees no stale
+     * connections are ever reused.
+     */
+    static class FreshHttpClientFactory implements ClientHttpRequestFactory {
+        @Override
+        public ClientHttpRequest createRequest(URI uri, HttpMethod httpMethod) throws IOException {
+            var factory = new org.springframework.http.client.JdkClientHttpRequestFactory(
+                HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(5))
+                    .build());
+            factory.setReadTimeout(Duration.ofSeconds(60));
+            return factory.createRequest(uri, httpMethod);
+        }
     }
 
     @Bean
