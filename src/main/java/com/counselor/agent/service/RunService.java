@@ -35,21 +35,30 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.Optional;
 import java.util.UUID;
+import javax.net.ssl.SNIHostName;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 
 @Service
 public class RunService {
@@ -387,6 +396,143 @@ public class RunService {
     }
 
     /**
+     * Probe TCP connectivity to each resolved IP of the given hostname.
+     * Returns only IPs that accept a TCP connection within a 2-second timeout.
+     */
+    private List<InetAddress> probeReachableIps(long runId, String hostname, int port) {
+        List<InetAddress> reachable = new ArrayList<>();
+        InetAddress[] addrs;
+        try {
+            addrs = InetAddress.getAllByName(hostname);
+        } catch (IOException e) {
+            log.error("[SSE-{}] DNS FAILED for {}: {}", runId, hostname, e.getMessage());
+            return reachable;
+        }
+        for (InetAddress addr : addrs) {
+            try (Socket s = new Socket()) {
+                s.connect(new InetSocketAddress(addr, port), 2000);
+                reachable.add(addr);
+            } catch (IOException e) {
+                log.warn("[SSE-{}] IP {} UNREACHABLE on port {} — {}",
+                    runId, addr.getHostAddress(), port, e.getMessage());
+            }
+        }
+        if (reachable.isEmpty()) {
+            log.error("[SSE-{}] ALL {} IPs UNREACHABLE for {}", runId, addrs.length, hostname);
+        } else if (reachable.size() < addrs.length) {
+            log.warn("[SSE-{}] IP probe: {}/{} reachable ({} bad IP filtered)",
+                runId, reachable.size(), addrs.length, addrs.length - reachable.size());
+        }
+        return reachable;
+    }
+
+    /**
+     * Send an HTTPS POST request to the given IP (SNI = hostname) and return
+     * a BufferedReader positioned at the response body.
+     */
+    private BufferedReader sendHttpOverIp(InetAddress ip, String hostname,
+            String requestJson, String apiKey, long runId) throws IOException {
+        SSLSocketFactory sslFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        SSLSocket socket = (SSLSocket) sslFactory.createSocket(ip, 443);
+        SSLParameters params = socket.getSSLParameters();
+        params.setServerNames(List.of(new SNIHostName(hostname)));
+        params.setEndpointIdentificationAlgorithm("HTTPS");
+        socket.setSSLParameters(params);
+        socket.setSoTimeout(600_000); // 10 min read timeout
+        log.info("[SSE-{}] TLS connected to {} (SNI={})", runId, ip.getHostAddress(), hostname);
+
+        byte[] bodyBytes = requestJson.getBytes(StandardCharsets.UTF_8);
+        OutputStream os = socket.getOutputStream();
+        String header = "POST /v1/chat/completions HTTP/1.1\r\n"
+            + "Host: " + hostname + "\r\n"
+            + "Authorization: Bearer " + apiKey + "\r\n"
+            + "Content-Type: application/json\r\n"
+            + "Accept: text/event-stream\r\n"
+            + "Content-Length: " + bodyBytes.length + "\r\n"
+            + "Connection: close\r\n"
+            + "\r\n";
+        os.write(header.getBytes(StandardCharsets.UTF_8));
+        os.write(bodyBytes);
+        os.flush();
+
+        BufferedReader reader = new BufferedReader(
+            new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+        String statusLine = reader.readLine();
+        log.info("[SSE-{}] HTTP response: {} from {}", runId, statusLine, ip.getHostAddress());
+        String headerLine;
+        while ((headerLine = reader.readLine()) != null && !headerLine.isBlank()) {
+            // skip
+        }
+        return reader;
+    }
+
+    /**
+     * Parse SSE stream from a BufferedReader, sending events to the emitter
+     * and accumulating text + tool calls.
+     */
+    private int parseSseStream(BufferedReader reader, long runId, SseEmitter emitter,
+            AtomicBoolean emitterClosed, StringBuilder fullText,
+            StringBuilder reasoningSink, LinkedHashMap<Integer, ToolCallAccumulator> tcAccum,
+            long sseStart) throws IOException {
+        String line;
+        int chunkCount = 0;
+        long firstChunkTime = 0;
+        while ((line = reader.readLine()) != null) {
+            if (emitterClosed.get()) {
+                log.info("[SSE-{}] Client disconnected, aborting at chunk {}", runId, chunkCount);
+                break;
+            }
+            if (firstChunkTime == 0) firstChunkTime = System.currentTimeMillis();
+            if (line.isBlank()) continue;
+            if (!line.startsWith("data:")) continue;
+            chunkCount++;
+            String json = line.substring(5).trim();
+            if (json.equals("[DONE]")) {
+                log.info("[SSE-{}] stream DONE — chunks={}, firstChunkLatency={}ms, total={}ms",
+                    runId, chunkCount,
+                    firstChunkTime > 0 ? firstChunkTime - sseStart : -1,
+                    System.currentTimeMillis() - sseStart);
+                break;
+            }
+            try {
+                var root = objectMapper.readTree(json);
+                var choices = root.path("choices");
+                if (!choices.isArray() || choices.isEmpty()) continue;
+                var delta = choices.get(0).path("delta");
+                var rc = delta.path("reasoning_content");
+                if (!rc.isMissingNode() && !rc.isNull() && !rc.asText().isEmpty()) {
+                    reasoningSink.append(rc.asText());
+                    safeSend(emitter, "agent_thinking", Map.of("content", rc.asText()));
+                }
+                var ct = delta.path("content");
+                if (!ct.isMissingNode() && !ct.isNull() && !ct.asText().isEmpty()) {
+                    String t = ct.asText();
+                    fullText.append(t);
+                    safeSend(emitter, "content", Map.of("content", t));
+                }
+                var tcs = delta.path("tool_calls");
+                if (tcs.isArray()) {
+                    for (var tcNode : tcs) {
+                        int idx = tcNode.path("index").asInt(0);
+                        var fn = tcNode.path("function");
+                        var acc = tcAccum.computeIfAbsent(idx,
+                            k -> new ToolCallAccumulator());
+                        var idNode = tcNode.path("id");
+                        if (!idNode.isMissingNode()) acc.id = idNode.asText();
+                        var nm = fn.path("name");
+                        if (!nm.isMissingNode()) acc.name = nm.asText();
+                        var args = fn.path("arguments");
+                        if (!args.isMissingNode()) acc.args.append(args.asText());
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("SSE parse error: {}", e.getMessage());
+            }
+        }
+        return chunkCount;
+    }
+
+    /**
      * Makes a raw SSE streaming call to DeepSeek (bypassing Spring AI) to get TRUE
      * real-time reasoning_content chunks. Processes each SSE line as it arrives,
      * forwards reasoning to the frontend, and accumulates text + tool calls.
@@ -461,7 +607,8 @@ public class RunService {
                 runId, model, requestJson.length(), idleMs,
                 idleMs > 30000 ? " (NEW CONNECTION expected)" : idleMs > 0 ? " (may reuse pooled)" : " (first request)");
 
-            // DNS pre-check: resolve api.deepseek.com to see if DNS is the issue
+            // DNS pre-check + IP probe: find reachable IPs for api.deepseek.com
+            List<InetAddress> reachableIps;
             try {
                 long dnsStart = System.currentTimeMillis();
                 InetAddress[] addrs = InetAddress.getAllByName("api.deepseek.com");
@@ -472,16 +619,13 @@ public class RunService {
             } catch (Exception dnsErr) {
                 log.error("[SSE-{}] DNS FAILED for api.deepseek.com: {}", runId, dnsErr.getMessage());
             }
-
-            // Fresh HttpClient per attempt — no connection pooling, no stale connections.
-            // Each retry gets a brand new TCP connection.
-            JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
-                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build());
-            factory.setReadTimeout(Duration.ofSeconds(600));
-            RestClient rawClient = restClientBuilder.requestFactory(factory).build();
+            reachableIps = probeReachableIps(runId, "api.deepseek.com", 443);
+            // Shuffle so multiple retries don't always hit the same IP first
+            if (reachableIps.size() > 1) {
+                java.util.Collections.shuffle(reachableIps);
+            }
 
             // Aggressive retries: 6 attempts with short delays (1s, 2s, 3s, 4s, 5s)
-            // Shared HttpClient pool means retry may reuse a still-warm connection
             Exception lastEx = null;
             int maxAttempts = 6;
             for (int attempt = 0; attempt < maxAttempts; attempt++) {
@@ -492,7 +636,36 @@ public class RunService {
                         "正在重试连接 (" + (attempt + 1) + "/" + maxAttempts + ")..."));
                     try { Thread.sleep(delaySec * 1000L); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
                 }
+
+                boolean succeeded = false;
+
+                // --- Path A: Direct IP connections (skip bad IPs) ---
+                if (!reachableIps.isEmpty()) {
+                    for (InetAddress ip : reachableIps) {
+                        try {
+                            BufferedReader reader = sendHttpOverIp(
+                                ip, "api.deepseek.com", requestJson, deepseekApiKey, runId);
+                            log.info("[SSE-{}] HTTP connected via IP {} — elapsed={}ms",
+                                runId, ip.getHostAddress(), System.currentTimeMillis() - sseStart);
+                            lastSuccessTime.set(System.currentTimeMillis());
+                            parseSseStream(reader, runId, emitter, emitterClosed,
+                                fullText, reasoningSink, tcAccum, sseStart);
+                            succeeded = true;
+                            break;
+                        } catch (IOException e) {
+                            log.warn("[SSE-{}] Direct IP {} failed: {} — {}",
+                                runId, ip.getHostAddress(), e.getClass().getSimpleName(), e.getMessage());
+                        }
+                    }
+                }
+                if (succeeded) { lastEx = null; break; }
+
+                // --- Path B: Fallback — use RestClient normally ---
                 try {
+                    JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
+                        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build());
+                    factory.setReadTimeout(Duration.ofSeconds(600));
+                    RestClient rawClient = restClientBuilder.requestFactory(factory).build();
                     rawClient.post()
                         .uri("https://api.deepseek.com/v1/chat/completions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -504,66 +677,8 @@ public class RunService {
                     lastSuccessTime.set(System.currentTimeMillis());
                     try (BufferedReader reader = new BufferedReader(
                             new InputStreamReader(resp.getBody(), StandardCharsets.UTF_8))) {
-                        String line;
-                        int chunkCount = 0;
-                        long firstChunkTime = 0;
-                        while ((line = reader.readLine()) != null) {
-                            if (emitterClosed.get()) {
-                                log.info("[SSE-{}] Client disconnected, aborting stream at chunk {}", runId, chunkCount);
-                                break;
-                            }
-                            if (firstChunkTime == 0) firstChunkTime = System.currentTimeMillis();
-                            if (line.isBlank()) continue;
-                            if (!line.startsWith("data:")) continue;
-                            chunkCount++;
-                            String json = line.substring(5).trim();
-                            if (json.equals("[DONE]")) {
-                                log.info("[SSE-{}] stream DONE — chunks={}, firstChunkLatency={}ms, total={}ms", runId, chunkCount, firstChunkTime > 0 ? firstChunkTime - sseStart : -1, System.currentTimeMillis() - sseStart);
-                                break;
-                            }
-
-                            try {
-                                var root = objectMapper.readTree(json);
-                                var choices = root.path("choices");
-                                if (!choices.isArray() || choices.isEmpty()) continue;
-                                var delta = choices.get(0).path("delta");
-
-                                // Reasoning → forward to frontend in real time
-                                var rc = delta.path("reasoning_content");
-                                if (!rc.isMissingNode() && !rc.isNull() && !rc.asText().isEmpty()) {
-                                    reasoningSink.append(rc.asText());
-                                    safeSend(emitter, "agent_thinking",
-                                        Map.of("content", rc.asText()));
-                                }
-
-                                // Text content → accumulate + stream to frontend
-                                var ct = delta.path("content");
-                                if (!ct.isMissingNode() && !ct.isNull() && !ct.asText().isEmpty()) {
-                                    String t = ct.asText();
-                                    fullText.append(t);
-                                    safeSend(emitter, "content", Map.of("content", t));
-                                }
-
-                                // Tool calls
-                                var tcs = delta.path("tool_calls");
-                                if (tcs.isArray()) {
-                                    for (var tcNode : tcs) {
-                                        int idx = tcNode.path("index").asInt(0);
-                                        var fn = tcNode.path("function");
-                                        var acc = tcAccum.computeIfAbsent(idx,
-                                            k -> new ToolCallAccumulator());
-                                        var idNode = tcNode.path("id");
-                                        if (!idNode.isMissingNode()) acc.id = idNode.asText();
-                                        var nm = fn.path("name");
-                                        if (!nm.isMissingNode()) acc.name = nm.asText();
-                                        var args = fn.path("arguments");
-                                        if (!args.isMissingNode()) acc.args.append(args.asText());
-                                    }
-                                }
-                            } catch (Exception e) {
-                                log.debug("SSE parse error: {}", e.getMessage());
-                            }
-                        }
+                        parseSseStream(reader, runId, emitter, emitterClosed,
+                            fullText, reasoningSink, tcAccum, sseStart);
                     }
                     return null;
                 });
